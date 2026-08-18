@@ -3,6 +3,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import pymysql
 import os
+from flask import Flask
+from threading import Thread
 
 # ==========================================
 # CONFIGURATION
@@ -207,5 +209,18 @@ async def check_levels_and_roles():
     finally:
         if 'conn' in locals() and conn.open:
             conn.close()
+# --- SERVEUR WEB POUR GARDER LE BOT ACTIF ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Le bot est en ligne !"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+# On lance le serveur web dans un "thread" séparé pour qu'il ne bloque pas le bot
+t = Thread(target=run_flask)
+t.start()
 
 bot.run(TOKEN)
