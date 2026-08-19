@@ -154,7 +154,7 @@ async def check_new_events():
                     discord_event = await guild.create_scheduled_event(**event_kwargs)
 
                     # 4. Message d'annonce dans le salon avec le lien cliquable
-                    salon = guild.get_channel(ID_SALON_ANNONCES)
+                    salon = guild.get_channel(1428768130519531722)
                     if salon:
                         embed = discord.Embed(
                             title=f"🚨 NOUVEL ÉVÉNEMENT : {ev['titre']}",
