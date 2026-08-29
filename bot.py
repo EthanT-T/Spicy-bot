@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import pytz
 import aiohttp
 import re
+import asyncio
 
 # ==========================================
 # CONFIGURATION (Via Variables d'Environnement)
@@ -26,6 +27,12 @@ try:
 except (TypeError, ValueError):
     ID_SALON_ANNONCES = 0
 
+# Optionnel : ID de la catégorie où les tickets de recrutement seront créés
+try:
+    ID_CATEGORIE_TICKETS = int(os.environ.get('ID_CATEGORIE_TICKETS', 0))
+except (TypeError, ValueError):
+    ID_CATEGORIE_TICKETS = 0
+
 NOM_ROLE_REPERE = "VIP"
 NOM_SEPARATEUR = "─── Niveaux ───"
 
@@ -34,8 +41,85 @@ DB_USER = os.environ.get('DB_USER', 'spicy-anomaly_admin')
 DB_PASS = os.environ.get('DB_PASS', 'p7$8FhKDQ@3xgxMb')
 DB_NAME = os.environ.get('DB_NAME', 'spicy-anomaly_stats')
 
+# L'URL de ton API existante (celle utilisée par ton site web)
+URL_API_STATUS = os.environ.get('URL_API_STATUS', 'https://spicy-anomaly.alwaysdata.net/api_public.php')
+
 intents = discord.Intents.default()
 intents.members = True
+
+# ==========================================
+# VUES PERSISTANTES (Boutons Tickets)
+# ==========================================
+
+class TicketCloseView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Fermer le ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket", emoji="🔒")
+    async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Seul un admin ou membre du staff (gérant les salons) peut fermer
+        if interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("🔒 **Fermeture du ticket dans 5 secondes...**")
+            await asyncio.sleep(5)
+            await interaction.channel.delete()
+        else:
+            await interaction.response.send_message("❌ Seul un membre du staff peut fermer ce ticket.", ephemeral=True)
+
+
+class RecrutementView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Postuler Modérateur", style=discord.ButtonStyle.primary, custom_id="ticket_mod", emoji="🛡️")
+    async def btn_mod(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.creer_ticket(interaction, "Modérateur", "mod")
+
+    @discord.ui.button(label="Postuler Animateur", style=discord.ButtonStyle.success, custom_id="ticket_anim", emoji="🎉")
+    async def btn_anim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.creer_ticket(interaction, "Animateur", "anim")
+
+    async def creer_ticket(self, interaction: discord.Interaction, role_nom: str, prefixe: str):
+        guild = interaction.guild
+        categorie = guild.get_channel(ID_CATEGORIE_TICKETS) if ID_CATEGORIE_TICKETS else None
+
+        # Nettoyage du pseudo pour le nom du channel (lettres minuscules et chiffres uniquement)
+        pseudo_clean = re.sub(r'[^a-z0-9]', '', interaction.user.display_name.lower())
+        if not pseudo_clean:
+            pseudo_clean = str(interaction.user.id)[:6]
+            
+        nom_salon = f"ticket-{prefixe}-{pseudo_clean}"
+        
+        # Vérification si le ticket existe déjà
+        existant = discord.utils.get(guild.text_channels, name=nom_salon)
+        if existant:
+            await interaction.response.send_message(f"❌ Tu as déjà un ticket d'ouvert : {existant.mention}", ephemeral=True)
+            return
+
+        # Permissions : Le bot + l'utilisateur + les Admins
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        }
+
+        try:
+            ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=overwrites, reason=f"Ticket recrutement {role_nom}")
+            await interaction.response.send_message(f"✅ Ton ticket a été créé : {ticket.mention}", ephemeral=True)
+            
+            embed = discord.Embed(
+                title=f"🎫 Candidature {role_nom}",
+                description=f"Bienvenue {interaction.user.mention} !\n\nL'équipe administrative traitera ta demande sous peu. En attendant, merci de préparer ta candidature ou de lister tes motivations ci-dessous.",
+                color=0x2ecc71 if prefixe == "anim" else 0x3498db
+            )
+            
+            await ticket.send(f"{interaction.user.mention} | Candidature", embed=embed, view=TicketCloseView())
+        except Exception as e:
+            await interaction.response.send_message("❌ Erreur lors de la création du ticket. Contacte un administrateur.", ephemeral=True)
+            print(f"Erreur Ticket: {e}")
+
+# ==========================================
+# CLASSE BOT PRINCIPALE
+# ==========================================
 
 class SpicyBot(commands.Bot):
     def __init__(self):
@@ -45,7 +129,12 @@ class SpicyBot(commands.Bot):
         guild = discord.Object(id=ID_SERVEUR_DISCORD)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
-        print("🔄 Commandes Slash (/) synchronisées avec succès !")
+        
+        # Enregistrer les vues pour qu'elles restent actives après un redémarrage du bot !
+        self.add_view(RecrutementView())
+        self.add_view(TicketCloseView())
+        
+        print("🔄 Commandes Slash (/) et Vues synchronisées avec succès !")
 
 bot = SpicyBot()
 
@@ -59,12 +148,11 @@ def get_db_connection():
     )
 
 def is_valid_url(url):
-    """Vérifie si une URL est correctement formée"""
     regex = re.compile(
-        r'^(?:http|ftp)s?://' # http:// ou https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' # domaine
-        r'localhost|' # localhost
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # ou IP
+        r'^(?:http|ftp)s?://'
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'
+        r'localhost|'
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
         r'(?::\d+)?(?:/[-A-Z0-9+&@#/%=~_|!:,.;]*)?$', re.IGNORECASE)
     return re.match(regex, url) is not None
 
@@ -81,6 +169,10 @@ async def get_or_create_role(guild, role_name, color=discord.Color.default()):
         except Exception as e:
             print(f"Erreur création rôle {role_name}: {e}")
     return role
+
+# ==========================================
+# EVENEMENTS ET BOUCLES
+# ==========================================
 
 @bot.event
 async def on_ready():
@@ -104,16 +196,23 @@ async def on_member_join(member):
 
 @tasks.loop(minutes=1)
 async def update_server_status():
+    """Met à jour le statut du bot via l'API publique du Panel Web"""
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT 1")
-        await bot.change_presence(activity=discord.Game(name="SCP: Secret Laboratory"))
+        async with aiohttp.ClientSession() as session:
+            async with session.get(URL_API_STATUS, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get('status') == 'online':
+                        players = data.get('players', 0)
+                        max_p = data.get('max', 20)
+                        # Affiche : "Regarde 12/20 joueurs sur SCP:SL"
+                        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=f"{players}/{max_p} joueurs sur SCP:SL"))
+                    else:
+                        await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
+                else:
+                    await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
     except Exception:
         await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
-    finally:
-        if 'conn' in locals() and conn.open:
-            conn.close()
 
 @tasks.loop(minutes=1)
 async def check_new_events():
@@ -144,7 +243,6 @@ async def check_new_events():
                 cursor.execute("UPDATE server_events SET discord_event_id = 'PENDING' WHERE id = %s", (event_db_id,))
                 conn.commit()
 
-                # Nettoyage et validation de l'URL de l'image
                 raw_image_url = ev.get('image_url')
                 valid_image_url = None
                 image_bytes = None
@@ -160,8 +258,6 @@ async def check_new_events():
                                         image_bytes = await resp.read()
                         except Exception as img_err:
                             print(f"⚠️ Impossible de télécharger l'image: {img_err}")
-                    else:
-                        print(f"⚠️ URL d'image invalide ignorée en BDD pour l'événement {event_db_id}: '{raw_image_url}'")
 
                 try:
                     event_kwargs = {
@@ -186,7 +282,6 @@ async def check_new_events():
                             description=f"{ev['description']}\n\n👉 **[Clique ici pour t'inscrire et recevoir une alerte !]({discord_event.url})**",
                             color=0xe63946
                         )
-                        # On n'applique l'image à l'embed que si elle est valide
                         if valid_image_url:
                             embed.set_image(url=valid_image_url)
                             
@@ -195,7 +290,6 @@ async def check_new_events():
 
                     cursor.execute("UPDATE server_events SET discord_event_id = %s WHERE id = %s", (str(discord_event.id), event_db_id))
                     conn.commit()
-                    print(f"🎉 Événement {ev['titre']} créé avec succès sur Discord !")
 
                 except Exception as ex:
                     print(f"Erreur création événement Discord : {ex}")
@@ -207,6 +301,56 @@ async def check_new_events():
     finally:
         if 'conn' in locals() and conn.open:
             conn.close()
+
+# ==========================================
+# COMMANDES SLASH (/)
+# ==========================================
+
+@bot.tree.command(name="recrutement", description="[STAFF] Gérer l'annonce de recrutement et générer les boutons de tickets")
+@app_commands.describe(
+    salon="Le salon Discord où envoyer l'annonce",
+    message="Le texte d'introduction de l'annonce",
+    besoin_modo="Recherche-t-on actuellement des Modérateurs ?",
+    besoin_anim="Recherche-t-on actuellement des Animateurs ?"
+)
+@app_commands.default_permissions(manage_guild=True) # Réservé aux personnes pouvant gérer le serveur
+async def recrutement_cmd(interaction: discord.Interaction, salon: discord.TextChannel, message: str, besoin_modo: bool, besoin_anim: bool):
+    
+    embed = discord.Embed(
+        title="📢 CAMPAGNE DE RECRUTEMENT",
+        description=message + "\n\n*Cliquez sur les boutons ci-dessous pour ouvrir un ticket de candidature exclusif et privé avec l'équipe administrative.*",
+        color=0xff3b3b
+    )
+    if interaction.guild.icon:
+        embed.set_thumbnail(url=interaction.guild.icon.url)
+    
+    recherche_texte = ""
+    if besoin_modo:
+        recherche_texte += "🛡️ **Modérateur** : OUVERT\n"
+    if besoin_anim:
+        recherche_texte += "🎉 **Animateur** : OUVERT\n"
+        
+    if recherche_texte:
+        embed.add_field(name="Postes actuellement à pourvoir :", value=recherche_texte, inline=False)
+    else:
+        embed.add_field(name="Postes à pourvoir :", value="❌ Fermé pour le moment.", inline=False)
+        
+    view = RecrutementView()
+    
+    # On retire les boutons dynamiquement si le rôle n'est pas recherché
+    if not besoin_modo:
+        btn = discord.utils.get(view.children, custom_id="ticket_mod")
+        if btn: view.remove_item(btn)
+    if not besoin_anim:
+        btn = discord.utils.get(view.children, custom_id="ticket_anim")
+        if btn: view.remove_item(btn)
+        
+    try:
+        await salon.send(content="🔔 @everyone", embed=embed, view=view)
+        await interaction.response.send_message(f"✅ L'annonce de recrutement a été générée avec succès dans {salon.mention}.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Je n'ai pas la permission d'envoyer un message dans ce salon.", ephemeral=True)
+
 
 @bot.tree.command(name="lier", description="Lie ton compte Discord à ton SteamID64")
 @app_commands.describe(steamid="Ton SteamID64 (ex: 7656119...)")
@@ -229,6 +373,7 @@ async def lier_compte(interaction: discord.Interaction, steamid: str):
     finally:
         if 'conn' in locals() and conn.open:
             conn.close()
+
 
 @bot.tree.command(name="stats", description="Affiche tes statistiques")
 async def voir_stats(interaction: discord.Interaction):
@@ -256,6 +401,7 @@ async def voir_stats(interaction: discord.Interaction):
     finally:
         if 'conn' in locals() and conn.open:
             conn.close()
+
 
 @tasks.loop(minutes=5)
 async def check_levels_and_roles():
@@ -290,6 +436,7 @@ async def check_levels_and_roles():
     finally:
         if 'conn' in locals() and conn.open:
             conn.close()
+
 
 app = Flask('')
 @app.route('/')
