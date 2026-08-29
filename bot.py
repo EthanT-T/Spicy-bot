@@ -27,11 +27,15 @@ try:
 except (TypeError, ValueError):
     ID_SALON_ANNONCES = 0
 
-# Optionnel : ID de la catégorie où les tickets de recrutement seront créés
 try:
     ID_CATEGORIE_TICKETS = int(os.environ.get('ID_CATEGORIE_TICKETS', 0))
 except (TypeError, ValueError):
     ID_CATEGORIE_TICKETS = 0
+
+try:
+    ID_SALON_CLASSEMENT = int(os.environ.get('ID_SALON_CLASSEMENT', 0))
+except (TypeError, ValueError):
+    ID_SALON_CLASSEMENT = 0
 
 NOM_ROLE_REPERE = "VIP"
 NOM_SEPARATEUR = "─── Niveaux ───"
@@ -41,7 +45,6 @@ DB_USER = os.environ.get('DB_USER', 'spicy-anomaly_admin')
 DB_PASS = os.environ.get('DB_PASS', 'p7$8FhKDQ@3xgxMb')
 DB_NAME = os.environ.get('DB_NAME', 'spicy-anomaly_stats')
 
-# L'URL de ton API existante (celle utilisée par ton site web)
 URL_API_STATUS = os.environ.get('URL_API_STATUS', 'https://spicy-anomaly.alwaysdata.net/api_public.php')
 
 intents = discord.Intents.default()
@@ -57,7 +60,6 @@ class TicketCloseView(discord.ui.View):
 
     @discord.ui.button(label="Fermer le ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket", emoji="🔒")
     async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Seul un admin ou membre du staff (gérant les salons) peut fermer
         if interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message("🔒 **Fermeture du ticket dans 5 secondes...**")
             await asyncio.sleep(5)
@@ -82,20 +84,17 @@ class RecrutementView(discord.ui.View):
         guild = interaction.guild
         categorie = guild.get_channel(ID_CATEGORIE_TICKETS) if ID_CATEGORIE_TICKETS else None
 
-        # Nettoyage du pseudo pour le nom du channel (lettres minuscules et chiffres uniquement)
         pseudo_clean = re.sub(r'[^a-z0-9]', '', interaction.user.display_name.lower())
         if not pseudo_clean:
             pseudo_clean = str(interaction.user.id)[:6]
             
         nom_salon = f"ticket-{prefixe}-{pseudo_clean}"
         
-        # Vérification si le ticket existe déjà
         existant = discord.utils.get(guild.text_channels, name=nom_salon)
         if existant:
             await interaction.response.send_message(f"❌ Tu as déjà un ticket d'ouvert : {existant.mention}", ephemeral=True)
             return
 
-        # Permissions : Le bot + l'utilisateur + les Admins
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
@@ -130,7 +129,6 @@ class SpicyBot(commands.Bot):
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
         
-        # Enregistrer les vues pour qu'elles restent actives après un redémarrage du bot !
         self.add_view(RecrutementView())
         self.add_view(TicketCloseView())
         
@@ -183,6 +181,8 @@ async def on_ready():
         check_new_events.start()
     if not update_server_status.is_running():
         update_server_status.start()
+    if not update_live_leaderboard.is_running():
+        update_live_leaderboard.start()
 
 @bot.event
 async def on_member_join(member):
@@ -196,7 +196,6 @@ async def on_member_join(member):
 
 @tasks.loop(minutes=1)
 async def update_server_status():
-    """Met à jour le statut du bot via l'API publique du Panel Web"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(URL_API_STATUS, timeout=10) as resp:
@@ -205,7 +204,6 @@ async def update_server_status():
                     if data.get('status') == 'online':
                         players = data.get('players', 0)
                         max_p = data.get('max', 20)
-                        # Affiche : "Regarde 12/20 joueurs sur SCP:SL"
                         await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=f"{players}/{max_p} joueurs sur SCP:SL"))
                     else:
                         await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
@@ -213,6 +211,73 @@ async def update_server_status():
                     await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
     except Exception:
         await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
+
+@tasks.loop(minutes=10)
+async def update_live_leaderboard():
+    """Récupère le Top 10 BDD et met à jour un message en direct sur Discord"""
+    if not ID_SALON_CLASSEMENT:
+        return
+        
+    guild = bot.get_guild(ID_SERVEUR_DISCORD)
+    if not guild: return
+    channel = guild.get_channel(ID_SALON_CLASSEMENT)
+    if not channel: return
+
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            # On prend les 10 meilleurs joueurs triés par XP
+            cursor.execute("SELECT pseudo, xp, level, kills, escapes FROM player_stats ORDER BY xp DESC LIMIT 10")
+            top_players = cursor.fetchall()
+
+        if not top_players:
+            return
+
+        embed = discord.Embed(
+            title="🏆 Hall of Fame - Top 10",
+            description="Mise à jour automatique toutes les 10 minutes d'après le serveur.",
+            color=0xff7300,
+            timestamp=discord.utils.utcnow()
+        )
+        
+        for i, player in enumerate(top_players):
+            if i == 0:
+                rank = "🥇 1er"
+            elif i == 1:
+                rank = "🥈 2ème"
+            elif i == 2:
+                rank = "🥉 3ème"
+            else:
+                rank = f"#{i+1}"
+            
+            kills = player['kills'] or 0
+            escapes = player['escapes'] or 0
+            xp = player['xp'] or 0
+            lvl = player['level'] or 1
+            
+            embed.add_field(
+                name=f"{rank} - {player['pseudo']}",
+                value=f"⭐ Niv. {lvl} | ✨ {xp} XP | 💀 {kills} Kills | 🏃 {escapes} Évasions",
+                inline=False
+            )
+        
+        embed.set_footer(text="Spicy Anomaly • Live Leaderboard")
+
+        # Cherche le dernier message du bot dans le salon pour le modifier (évite le spam)
+        async for msg in channel.history(limit=10):
+            if msg.author == bot.user and len(msg.embeds) > 0 and "Hall of Fame" in str(msg.embeds[0].title):
+                await msg.edit(embed=embed)
+                return
+        
+        # Si aucun message trouvé, on nettoie le salon et on envoie le nouveau classement
+        await channel.purge(limit=10)
+        await channel.send(embed=embed)
+
+    except Exception as e:
+        print(f"Erreur Live Leaderboard: {e}")
+    finally:
+        if 'conn' in locals() and conn.open:
+            conn.close()
 
 @tasks.loop(minutes=1)
 async def check_new_events():
@@ -313,7 +378,7 @@ async def check_new_events():
     besoin_modo="Recherche-t-on actuellement des Modérateurs ?",
     besoin_anim="Recherche-t-on actuellement des Animateurs ?"
 )
-@app_commands.default_permissions(manage_guild=True) # Réservé aux personnes pouvant gérer le serveur
+@app_commands.default_permissions(manage_guild=True)
 async def recrutement_cmd(interaction: discord.Interaction, salon: discord.TextChannel, message: str, besoin_modo: bool, besoin_anim: bool):
     
     embed = discord.Embed(
@@ -337,7 +402,6 @@ async def recrutement_cmd(interaction: discord.Interaction, salon: discord.TextC
         
     view = RecrutementView()
     
-    # On retire les boutons dynamiquement si le rôle n'est pas recherché
     if not besoin_modo:
         btn = discord.utils.get(view.children, custom_id="ticket_mod")
         if btn: view.remove_item(btn)
@@ -374,6 +438,32 @@ async def lier_compte(interaction: discord.Interaction, steamid: str):
         if 'conn' in locals() and conn.open:
             conn.close()
 
+# -------- NOUVELLE COMMANDE DELIER --------
+@bot.tree.command(name="delier", description="[STAFF] Délie un compte Discord d'un SteamID64")
+@app_commands.describe(steamid="Le SteamID64 à délier (ex: 7656119...)")
+@app_commands.default_permissions(manage_guild=True)
+async def delier_compte(interaction: discord.Interaction, steamid: str):
+    if not steamid.endswith('@steam'):
+        steamid += '@steam'
+        
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            sql = "UPDATE player_stats SET discord_id = NULL WHERE steamid = %s"
+            affected = cursor.execute(sql, (steamid,))
+            conn.commit()
+            
+            if affected > 0:
+                await interaction.response.send_message(f"✅ Le compte associé au SteamID `{steamid}` a été délié avec succès !", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ SteamID introuvable dans la base de données ou déjà délié.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message("❌ Erreur de base de données.", ephemeral=True)
+        print(f"Erreur déliaison: {e}")
+    finally:
+        if 'conn' in locals() and conn.open:
+            conn.close()
+# ------------------------------------------
 
 @bot.tree.command(name="stats", description="Affiche tes statistiques")
 async def voir_stats(interaction: discord.Interaction):
