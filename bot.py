@@ -10,30 +10,39 @@ import pytz
 import aiohttp
 
 # ==========================================
-# CONFIGURATION
+# CONFIGURATION (Via Variables d'Environnement)
 # ==========================================
 
 TOKEN = os.environ.get('DISCORD_TOKEN')
-ID_SERVEUR_DISCORD = 1392952674604814487  # ID de ton serveur Discord
-ID_SALON_ANNONCES = 1234567890             # ⚠️ REMPLACE PAR L'ID DU SALON D'ANNONCE (Ex: salon annonce event)
+
+# Sécurisation et récupération des IDs (avec valeurs par défaut de secours)
+try:
+    ID_SERVEUR_DISCORD = int(os.environ.get('ID_SERVEUR_DISCORD', 1392952674604814487))
+except (TypeError, ValueError):
+    ID_SERVEUR_DISCORD = 1392952674604814487
+
+try:
+    ID_SALON_ANNONCES = int(os.environ.get('ID_SALON_ANNONCES', 0))
+except (TypeError, ValueError):
+    ID_SALON_ANNONCES = 0
+
 NOM_ROLE_REPERE = "VIP"                    # Nom exact du rôle sous lequel placer les niveaux
 NOM_SEPARATEUR = "─── Niveaux ───"         # Nom du rôle séparateur
 
 # Configuration MySQL
-DB_HOST = 'mysql-spicy-anomaly.alwaysdata.net'
-DB_USER = 'spicy-anomaly_admin'
-DB_PASS = 'p7$8FhKDQ@3xgxMb'
-DB_NAME = 'spicy-anomaly_stats'
+DB_HOST = os.environ.get('DB_HOST', 'mysql-spicy-anomaly.alwaysdata.net')
+DB_USER = os.environ.get('DB_USER', 'spicy-anomaly_admin')
+DB_PASS = os.environ.get('DB_PASS', 'p7$8FhKDQ@3xgxMb')
+DB_NAME = os.environ.get('DB_NAME', 'spicy-anomaly_stats')
 
 intents = discord.Intents.default()
-intents.members = True # Indispensable pour scanner les membres !
+intents.members = True  # Indispensable pour scanner les membres !
 
 class SpicyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # Synchronise les commandes slash avec ton serveur Discord pour qu'elles apparaissent instantanément
         guild = discord.Object(id=ID_SERVEUR_DISCORD)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
@@ -74,7 +83,7 @@ async def get_or_create_role(guild, role_name, color=discord.Color.default()):
     return role
 
 # ==========================================
-# ÉVÉNEMENTS
+# ÉVÉNEMENTS DU BOT
 # ==========================================
 
 @bot.event
@@ -98,21 +107,17 @@ async def on_member_join(member):
             pass
 
 # ==========================================
-# STATUT DYNAMIQUE (JOUEURS SCP:SL)
+# STATUT DYNAMIQUE DU BOT
 # ==========================================
+
 @tasks.loop(minutes=1)
 async def update_server_status():
-    """Vetc la BDD ou une table de stats pour voir combien de joueurs sont connectés, ou met 'Hors ligne'"""
+    """Met à jour le statut du bot (Jeu / Activité)"""
     try:
         conn = get_db_connection()
+        # Test simple de connexion à la BDD pour valider que le serveur web/BDD répond
         with conn.cursor() as cursor:
-            # Exemple : Si tu as une table ou un champ qui indique l'état du serveur ou le nombre de joueurs en ligne
-            # Adapte cette requête selon la structure de ta BDD (ex: table server_info, ou status des joueurs récents)
-            cursor.execute("SELECT COUNT(*) as players FROM player_stats WHERE /* condition de connexion en jeu */ 1=0") 
-            # ⚠️ Si tu n'as pas de colonne de players en ligne direct, tu peux adapter. 
-            # Alternative simple : Mettre un texte fixe ou récupérer depuis une API de ton panel web.
-            
-        # Pour l'exemple, affichons un statut personnalisé (tu peux adapter avec ta vraie logique de players)
+            cursor.execute("SELECT 1")
         await bot.change_presence(activity=discord.Game(name="SCP: Secret Laboratory"))
     except Exception as e:
         await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
@@ -123,6 +128,7 @@ async def update_server_status():
 # ==========================================
 # CRÉATION AUTOMATIQUE D'ÉVÉNEMENTS
 # ==========================================
+
 @tasks.loop(minutes=1)
 async def check_new_events():
     guild = bot.get_guild(ID_SERVEUR_DISCORD)
@@ -131,7 +137,7 @@ async def check_new_events():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            # On cherche les événements pas encore postés
+            # On cherche les événements non postés
             cursor.execute("SELECT * FROM server_events WHERE discord_event_id IS NULL OR discord_event_id = ''")
             new_events = cursor.fetchall()
 
@@ -151,7 +157,7 @@ async def check_new_events():
                 
                 end_time = start_time + timedelta(hours=2)
 
-                # 2. Bloquer immédiatement en BDD pour éviter les doublons si la boucle tourne trop vite
+                # 2. VERROUILLAGE BDD : Empêche les boucles et doublons en marquant 'PENDING'
                 cursor.execute("UPDATE server_events SET discord_event_id = 'PENDING' WHERE id = %s", (event_db_id,))
                 conn.commit()
 
@@ -196,14 +202,14 @@ async def check_new_events():
                         embed.set_footer(text=f"Organisé par {ev['staff_implique']}")
                         await salon.send("@everyone", embed=embed)
 
-                    # 6. Mettre à jour avec le vrai ID Discord de l'événement
+                    # 6. Sauvegarde du vrai ID Discord de l'événement
                     cursor.execute("UPDATE server_events SET discord_event_id = %s WHERE id = %s", (str(discord_event.id), event_db_id))
                     conn.commit()
                     print(f"🎉 Événement {ev['titre']} créé avec succès sur Discord !")
 
                 except Exception as ex:
                     print(f"Erreur création événement Discord : {ex}")
-                    # En cas d'erreur, on remet à NULL pour retenter plus tard
+                    # En cas d'échec, on remet à NULL pour retenter plus tard
                     cursor.execute("UPDATE server_events SET discord_event_id = NULL WHERE id = %s", (event_db_id,))
                     conn.commit()
 
