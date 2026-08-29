@@ -15,8 +15,8 @@ import aiohttp
 
 TOKEN = os.environ.get('DISCORD_TOKEN')
 ID_SERVEUR_DISCORD = 1392952674604814487  # ID de ton serveur Discord
-ID_SALON_ANNONCES = 1234567890            # ⚠️ REMPLACE PAR L'ID DU SALON D'ANNONCE
-NOM_ROLE_REPERE = "VIP"                   # Nom exact du rôle sous lequel placer les niveaux
+ID_SALON_ANNONCES = 1234567890             # ⚠️ REMPLACE PAR L'ID DU SALON D'ANNONCE (Ex: salon annonce event)
+NOM_ROLE_REPERE = "VIP"                    # Nom exact du rôle sous lequel placer les niveaux
 NOM_SEPARATEUR = "─── Niveaux ───"         # Nom du rôle séparateur
 
 # Configuration MySQL
@@ -84,6 +84,8 @@ async def on_ready():
         check_levels_and_roles.start()
     if not check_new_events.is_running():
         check_new_events.start()
+    if not update_server_status.is_running():
+        update_server_status.start()
 
 @bot.event
 async def on_member_join(member):
@@ -96,7 +98,30 @@ async def on_member_join(member):
             pass
 
 # ==========================================
-# CRÉATION AUTOMATIQUE D'ÉVÉNEMENTS (OPTIONNEL SI SANS IMAGE)
+# STATUT DYNAMIQUE (JOUEURS SCP:SL)
+# ==========================================
+@tasks.loop(minutes=1)
+async def update_server_status():
+    """Vetc la BDD ou une table de stats pour voir combien de joueurs sont connectés, ou met 'Hors ligne'"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            # Exemple : Si tu as une table ou un champ qui indique l'état du serveur ou le nombre de joueurs en ligne
+            # Adapte cette requête selon la structure de ta BDD (ex: table server_info, ou status des joueurs récents)
+            cursor.execute("SELECT COUNT(*) as players FROM player_stats WHERE /* condition de connexion en jeu */ 1=0") 
+            # ⚠️ Si tu n'as pas de colonne de players en ligne direct, tu peux adapter. 
+            # Alternative simple : Mettre un texte fixe ou récupérer depuis une API de ton panel web.
+            
+        # Pour l'exemple, affichons un statut personnalisé (tu peux adapter avec ta vraie logique de players)
+        await bot.change_presence(activity=discord.Game(name="SCP: Secret Laboratory"))
+    except Exception as e:
+        await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
+    finally:
+        if 'conn' in locals() and conn.open:
+            conn.close()
+
+# ==========================================
+# CRÉATION AUTOMATIQUE D'ÉVÉNEMENTS
 # ==========================================
 @tasks.loop(minutes=1)
 async def check_new_events():
@@ -106,15 +131,17 @@ async def check_new_events():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            # On cherche les événements pas encore postés sur Discord
-            cursor.execute("SELECT * FROM server_events WHERE discord_event_id IS NULL")
+            # On cherche les événements pas encore postés
+            cursor.execute("SELECT * FROM server_events WHERE discord_event_id IS NULL OR discord_event_id = ''")
             new_events = cursor.fetchall()
 
             for ev in new_events:
+                event_db_id = ev['id']
+                
                 # 1. Préparation de la date (Heure de Paris)
                 tz = pytz.timezone('Europe/Paris')
                 try:
-                    start_time = datetime.strptime(ev['date_event'], '%Y-%m-%dT%H:%M')
+                    start_time = datetime.strptime(str(ev['date_event']), '%Y-%m-%dT%H:%M')
                     start_time = tz.localize(start_time)
                 except:
                     start_time = datetime.now(tz) + timedelta(minutes=10)
@@ -124,7 +151,11 @@ async def check_new_events():
                 
                 end_time = start_time + timedelta(hours=2)
 
-                # 2. Récupération optionnelle de l'image en bytes
+                # 2. Bloquer immédiatement en BDD pour éviter les doublons si la boucle tourne trop vite
+                cursor.execute("UPDATE server_events SET discord_event_id = 'PENDING' WHERE id = %s", (event_db_id,))
+                conn.commit()
+
+                # 3. Récupération optionnelle de l'image en bytes
                 image_bytes = None
                 if ev.get('image_url') and ev['image_url'].strip() != "":
                     try:
@@ -135,7 +166,7 @@ async def check_new_events():
                     except Exception as img_err:
                         print(f"⚠️ Impossible de charger l'image de l'événement: {img_err}")
 
-                # 3. Création de l'événement natif Discord (Gère l'image en option)
+                # 4. Création de l'événement natif Discord
                 try:
                     event_kwargs = {
                         "name": f"🎉 {ev['titre']}",
@@ -147,14 +178,13 @@ async def check_new_events():
                         "privacy_level": discord.PrivacyLevel.guild_only
                     }
 
-                    # On ajoute l'image seulement si elle a pu être téléchargée
                     if image_bytes:
                         event_kwargs["image"] = image_bytes
 
                     discord_event = await guild.create_scheduled_event(**event_kwargs)
 
-                    # 4. Message d'annonce dans le salon avec le lien cliquable
-                    salon = guild.get_channel(1428768130519531722)
+                    # 5. Message d'annonce dans le salon configuré (ID_SALON_ANNONCES)
+                    salon = guild.get_channel(ID_SALON_ANNONCES)
                     if salon:
                         embed = discord.Embed(
                             title=f"🚨 NOUVEL ÉVÉNEMENT : {ev['titre']}",
@@ -166,13 +196,17 @@ async def check_new_events():
                         embed.set_footer(text=f"Organisé par {ev['staff_implique']}")
                         await salon.send("@everyone", embed=embed)
 
-                    # 5. Marquer l'événement comme posté en BDD
-                    cursor.execute("UPDATE server_events SET discord_event_id = %s WHERE id = %s", (discord_event.id, ev['id']))
+                    # 6. Mettre à jour avec le vrai ID Discord de l'événement
+                    cursor.execute("UPDATE server_events SET discord_event_id = %s WHERE id = %s", (str(discord_event.id), event_db_id))
                     conn.commit()
                     print(f"🎉 Événement {ev['titre']} créé avec succès sur Discord !")
 
                 except Exception as ex:
                     print(f"Erreur création événement Discord : {ex}")
+                    # En cas d'erreur, on remet à NULL pour retenter plus tard
+                    cursor.execute("UPDATE server_events SET discord_event_id = NULL WHERE id = %s", (event_db_id,))
+                    conn.commit()
+
     except Exception as e:
         print(f"Erreur DB check events: {e}")
     finally:
