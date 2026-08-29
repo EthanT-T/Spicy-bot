@@ -214,7 +214,7 @@ async def update_server_status():
 
 @tasks.loop(minutes=10)
 async def update_live_leaderboard():
-    """Récupère le Top 10 BDD et met à jour un message en direct sur Discord"""
+    """Récupère le Top 10 XP et le Top 10 Kills et met à jour le salon Discord"""
     if not ID_SALON_CLASSEMENT:
         return
         
@@ -226,50 +226,68 @@ async def update_live_leaderboard():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            # On prend les 10 meilleurs joueurs triés par XP
+            # 1. Top 10 XP (Hall of Fame)
             cursor.execute("SELECT pseudo, xp, level, kills, escapes FROM player_stats ORDER BY xp DESC LIMIT 10")
-            top_players = cursor.fetchall()
+            top_xp = cursor.fetchall()
 
-        if not top_players:
+            # 2. Top 10 Kills
+            cursor.execute("SELECT pseudo, kills, deaths, level FROM player_stats ORDER BY kills DESC LIMIT 10")
+            top_kills = cursor.fetchall()
+
+        if not top_xp and not top_kills:
             return
 
         embed = discord.Embed(
-            title="🏆 Hall of Fame - Top 10",
-            description="Mise à jour automatique toutes les 10 minutes d'après le serveur.",
-            color=0xff7300,
+            title="📊 CLASSEMENTS OFFICIELS SPICY ANOMALY",
+            description="Mise à jour automatique toutes les **10 minutes** synchronisée avec le serveur de jeu.\n🔗 **[Voir le Panel Web](https://spicy-anomaly.alwaysdata.net)**",
+            color=0xe63946,
             timestamp=discord.utils.utcnow()
         )
-        
-        for i, player in enumerate(top_players):
-            if i == 0:
-                rank = "🥇 1er"
-            elif i == 1:
-                rank = "🥈 2ème"
-            elif i == 2:
-                rank = "🥉 3ème"
-            else:
-                rank = f"#{i+1}"
-            
-            kills = player['kills'] or 0
-            escapes = player['escapes'] or 0
+
+        def get_rank_str(index):
+            if index == 0: return "🥇"
+            if index == 1: return "🥈"
+            if index == 2: return "🥉"
+            return f"`#{index+1}`"
+
+        # --- BLOC 1 : TOP 10 XP ---
+        texte_xp = ""
+        for i, player in enumerate(top_xp):
+            rank = get_rank_str(i)
             xp = player['xp'] or 0
             lvl = player['level'] or 1
-            
-            embed.add_field(
-                name=f"{rank} - {player['pseudo']}",
-                value=f"⭐ Niv. {lvl} | ✨ {xp} XP | 💀 {kills} Kills | 🏃 {escapes} Évasions",
-                inline=False
-            )
-        
-        embed.set_footer(text="Spicy Anomaly • Live Leaderboard")
+            texte_xp += f"{rank} **{player['pseudo']}** • Niv. {lvl} ({xp:,} XP)\n"
 
-        # Cherche le dernier message du bot dans le salon pour le modifier (évite le spam)
+        embed.add_field(
+            name="🏆 Hall of Fame (Top Progression)",
+            value=texte_xp if texte_xp else "Aucune donnée.",
+            inline=False
+        )
+
+        # --- BLOC 2 : TOP 10 KILLS ---
+        texte_kills = ""
+        for i, player in enumerate(top_kills):
+            rank = get_rank_str(i)
+            k = player['kills'] or 0
+            d = player['deaths'] or 0
+            kd = f"{(k/d):.2f}" if d > 0 else str(k)
+            texte_kills += f"{rank} **{player['pseudo']}** • **{k}** Kills (Ratio K/D: `{kd}`)\n"
+
+        embed.add_field(
+            name="💀 Top 10 Tueurs (Kills)",
+            value=texte_kills if texte_kills else "Aucune donnée.",
+            inline=False
+        )
+
+        embed.set_footer(text="Spicy Anomaly • Classement en Direct")
+
+        # Cherche et modifie le message existant
         async for msg in channel.history(limit=10):
-            if msg.author == bot.user and len(msg.embeds) > 0 and "Hall of Fame" in str(msg.embeds[0].title):
+            if msg.author == bot.user and len(msg.embeds) > 0 and "CLASSEMENTS OFFICIELS" in str(msg.embeds[0].title):
                 await msg.edit(embed=embed)
                 return
         
-        # Si aucun message trouvé, on nettoie le salon et on envoie le nouveau classement
+        # Sinon premier envoi
         await channel.purge(limit=10)
         await channel.send(embed=embed)
 
@@ -438,7 +456,7 @@ async def lier_compte(interaction: discord.Interaction, steamid: str):
         if 'conn' in locals() and conn.open:
             conn.close()
 
-# -------- NOUVELLE COMMANDE DELIER --------
+
 @bot.tree.command(name="delier", description="[STAFF] Délie un compte Discord d'un SteamID64")
 @app_commands.describe(steamid="Le SteamID64 à délier (ex: 7656119...)")
 @app_commands.default_permissions(manage_guild=True)
@@ -463,7 +481,7 @@ async def delier_compte(interaction: discord.Interaction, steamid: str):
     finally:
         if 'conn' in locals() and conn.open:
             conn.close()
-# ------------------------------------------
+
 
 @bot.tree.command(name="stats", description="Affiche tes statistiques")
 async def voir_stats(interaction: discord.Interaction):
