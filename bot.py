@@ -183,7 +183,7 @@ class TicketStaffView(discord.ui.View):
                 for child in self.children:
                     if isinstance(child, discord.ui.Button) and child.style != discord.ButtonStyle.link:
                         child.disabled = True
-                    
+                
                 await interaction.message.edit(embed=embed, view=self)
                 await interaction.response.send_message("✅ Incident clos et archivé dans tes statistiques.", ephemeral=True)
                 
@@ -390,6 +390,8 @@ async def on_ready():
         update_live_leaderboard.start()
     if not check_new_tickets.is_running():
         check_new_tickets.start()
+    if not election_mvp_hebdomadaire.is_running():
+        election_mvp_hebdomadaire.start()
 
 @bot.event
 async def on_member_join(member):
@@ -411,6 +413,64 @@ async def on_member_join(member):
         await member.send(embed=embed, view=LierCompteView())
     except discord.Forbidden:
         pass
+
+
+@tasks.loop(hours=168) # S'exécute toutes les 168h (1 semaine)
+async def election_mvp_hebdomadaire():
+    guild = bot.get_guild(ID_SERVEUR_DISCORD)
+    if not guild: return
+    
+    salon_annonces = guild.get_channel(ID_SALON_ANNONCES)
+    
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            # Sélectionne le joueur avec le plus d'XP et un compte Discord lié
+            cursor.execute("SELECT steamid, discord_id, pseudo, xp, level FROM player_stats WHERE discord_id IS NOT NULL ORDER BY xp DESC LIMIT 1")
+            mvp = cursor.fetchone()
+            
+            if not mvp:
+                return
+
+            steamid_mvp = mvp['steamid']
+            discord_id_mvp = int(mvp['discord_id'])
+            pseudo_mvp = mvp['pseudo']
+            
+            # Attribue le badge trophée sur le panel web via la base de données
+            cursor.execute("UPDATE player_stats SET custom_badge = '🏆' WHERE steamid = %s", (steamid_mvp,))
+            # Retire le badge des autres joueurs s'ils l'avaient
+            cursor.execute("UPDATE player_stats SET custom_badge = NULL WHERE steamid != %s AND custom_badge = '🏆'", (steamid_mvp,))
+            conn.commit()
+
+        # Gestion des rôles Discord
+        role_mvp_nom = "🌟 MVP de la Semaine"
+        role_mvp = await get_or_create_role(guild, role_mvp_nom, discord.Color.gold())
+        
+        # Retire le rôle à l'ancien MVP
+        for member in guild.members:
+            if role_mvp in member.roles and member.id != discord_id_mvp:
+                await member.remove_roles(role_mvp)
+                
+        # Attribue le rôle au nouveau MVP
+        nouveau_mvp_member = guild.get_member(discord_id_mvp)
+        if nouveau_mvp_member:
+            await nouveau_mvp_member.add_roles(role_mvp)
+            
+            # Envoie l'annonce dans le salon configuré
+            if salon_annonces:
+                embed = discord.Embed(
+                    title="🌟 MVP DE LA SEMAINE",
+                    description=f"Félicitations à **{pseudo_mvp}** qui remporte le titre de MVP cette semaine grâce à ses performances sur le serveur !\n\n🎁 **Récompenses :**\n• Rôle exclusif **{role_mvp_nom}**\n• Badge trophée `🏆` sur son profil web\n\nMerci à tous pour votre participation !",
+                    color=discord.Color.gold()
+                )
+                embed.set_footer(text="Prochaine élection dimanche prochain !")
+                await salon_annonces.send(content=f"🎉 {nouveau_mvp_member.mention}", embed=embed)
+
+    except Exception as e:
+        print(f"Erreur lors de l'élection du MVP : {e}")
+    finally:
+        if 'conn' in locals() and conn.open:
+            conn.close()
 
 
 @tasks.loop(seconds=15)
