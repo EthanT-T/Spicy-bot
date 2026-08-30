@@ -610,7 +610,7 @@ async def voir_casier(interaction: discord.Interaction):
 
 @bot.tree.command(name="patchnote", description="[STAFF] Publier une mise à jour formatée automatiquement")
 @app_commands.default_permissions(manage_guild=True)
-async def patchnote_cmd(interaction: discord.Interaction, version: str, notes_brutes: str):
+async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextChannel, version: str, notes_brutes: str):
     """ Utilise + (ajout), - (retrait/bug), ~ (modif) en séparant par des virgules """
     ajouts, retraits, modifs = [], [], []
     lignes = notes_brutes.replace(',', '\n').split('\n')
@@ -634,15 +634,8 @@ async def patchnote_cmd(interaction: discord.Interaction, version: str, notes_br
     if retraits: embed.add_field(name="🔴 Corrections & Retraits", value="\n".join(retraits), inline=False)
     embed.set_footer(text=f"Publié par {interaction.user.display_name}")
 
-    guild = interaction.guild
-    salon_annonces = guild.get_channel(ID_SALON_ANNONCES)
-    
-    if salon_annonces:
-        await salon_annonces.send(embed=embed)
-        await interaction.response.send_message(f"✅ Patch note publié dans {salon_annonces.mention}", ephemeral=True)
-    else:
-        await interaction.response.send_message("❌ ID_SALON_ANNONCES n'est pas configuré.", ephemeral=True)
-        await interaction.channel.send(embed=embed)
+    await salon.send(embed=embed)
+    await interaction.response.send_message(f"✅ Patch note publié avec succès dans {salon.mention}", ephemeral=True)
 
 @bot.tree.command(name="warn", description="[STAFF] Avertir un joueur (Enregistré en BDD)")
 @app_commands.default_permissions(manage_messages=True)
