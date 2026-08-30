@@ -37,9 +37,14 @@ try:
 except (TypeError, ValueError):
     ID_SALON_CLASSEMENT = 0
 
+try:
+    ID_SALON_TICKETS_STAFF = int(os.environ.get('ID_SALON_TICKETS_STAFF', 0)) # Salon où le bot enverra les reports IG
+except (TypeError, ValueError):
+    ID_SALON_TICKETS_STAFF = 0
+
 NOM_ROLE_REPERE = "VIP"
 NOM_SEPARATEUR = "─── Niveaux ───"
-NOM_ROLE_LIE = "Lié" # Nouveau rôle
+NOM_ROLE_LIE = "Lié"
 
 DB_HOST = os.environ.get('DB_HOST', 'mysql-spicy-anomaly.alwaysdata.net')
 DB_USER = os.environ.get('DB_USER', 'spicy-anomaly_admin')
@@ -47,6 +52,7 @@ DB_PASS = os.environ.get('DB_PASS', 'p7$8FhKDQ@3xgxMb')
 DB_NAME = os.environ.get('DB_NAME', 'spicy-anomaly_stats')
 
 URL_API_STATUS = os.environ.get('URL_API_STATUS', 'https://spicy-anomaly.alwaysdata.net/api_public.php')
+URL_PANEL_WEB = "https://spicy-anomaly.alwaysdata.net"
 
 intents = discord.Intents.default()
 intents.members = True
@@ -91,6 +97,105 @@ async def get_or_create_role(guild, role_name, color=discord.Color.default()):
 # VUES PERSISTANTES ET MODAUX
 # ==========================================
 
+class TicketStaffView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        # Ajout du bouton vers le panel web en plus des boutons d'action
+        self.add_item(discord.ui.Button(label="Aller sur le Panel", style=discord.ButtonStyle.link, url=URL_PANEL_WEB, emoji="🌐"))
+
+    @discord.ui.button(label="Prendre le ticket", style=discord.ButtonStyle.primary, custom_id="btn_claim_ticket_ig", emoji="🙋")
+    async def btn_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_messages:
+            return await interaction.response.send_message("❌ Accès refusé. Réservé au staff.", ephemeral=True)
+
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT steamid, pseudo FROM player_stats WHERE discord_id = %s", (str(interaction.user.id),))
+                staff = cursor.fetchone()
+                
+                if not staff:
+                    return await interaction.response.send_message("❌ Ton compte Discord n'est pas lié. Impossible de t'assigner le ticket en base de données.", ephemeral=True)
+
+                cursor.execute("SELECT id, status FROM server_events_tickets WHERE discord_message_id = %s", (str(interaction.message.id),))
+                ticket = cursor.fetchone()
+
+                if not ticket:
+                    return await interaction.response.send_message("❌ Ticket introuvable.", ephemeral=True)
+
+                if ticket['status'] in ['Pris', 'resolu', 'Résolu']:
+                    return await interaction.response.send_message("⚠️ Ce ticket est déjà en cours de traitement ou résolu.", ephemeral=True)
+
+                cursor.execute("UPDATE server_events_tickets SET status = 'Pris', claimed_by = %s, claimed_steamid = %s WHERE id = %s", (staff['pseudo'], staff['steamid'], ticket['id']))
+                conn.commit()
+
+                embed = interaction.message.embeds[0]
+                embed.color = 0xf39c12 # Orange (En cours)
+                embed.add_field(name="🔄 Statut", value=f"Pris en charge par **{staff['pseudo']}**", inline=False)
+                
+                button.disabled = True
+                await interaction.message.edit(embed=embed, view=self)
+                await interaction.response.send_message("✅ Tu as été assigné à ce ticket.", ephemeral=True)
+                
+        except Exception as e:
+            print(f"Erreur prise de ticket: {e}")
+            await interaction.response.send_message("❌ Une erreur technique est survenue.", ephemeral=True)
+        finally:
+            if 'conn' in locals() and conn.open:
+                conn.close()
+
+    @discord.ui.button(label="Clôturer", style=discord.ButtonStyle.success, custom_id="btn_resolve_ticket_ig", emoji="✅")
+    async def btn_resolve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_messages:
+            return await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
+
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT steamid FROM player_stats WHERE discord_id = %s", (str(interaction.user.id),))
+                staff = cursor.fetchone()
+                
+                if not staff:
+                    return await interaction.response.send_message("❌ Ton compte n'est pas lié.", ephemeral=True)
+
+                cursor.execute("SELECT id, status, claimed_steamid FROM server_events_tickets WHERE discord_message_id = %s", (str(interaction.message.id),))
+                ticket = cursor.fetchone()
+
+                if not ticket:
+                    return await interaction.response.send_message("❌ Ticket introuvable.", ephemeral=True)
+
+                if ticket['status'] in ['resolu', 'Résolu']:
+                    return await interaction.response.send_message("⚠️ Ce ticket est déjà clos.", ephemeral=True)
+
+                if ticket['status'] == 'Pris' and ticket['claimed_steamid'] != staff['steamid'] and not interaction.user.guild_permissions.administrator:
+                    return await interaction.response.send_message("❌ Tu ne peux pas clôturer un ticket pris par un autre membre du staff.", ephemeral=True)
+
+                cursor.execute("UPDATE server_events_tickets SET status = 'resolu' WHERE id = %s", (ticket['id'],))
+                cursor.execute("UPDATE player_stats SET tickets_resolus = tickets_resolus + 1 WHERE steamid = %s", (staff['steamid'],))
+                conn.commit()
+
+                embed = interaction.message.embeds[0]
+                embed.color = 0x2ecc71 # Vert (Terminé)
+                if len(embed.fields) > 0 and embed.fields[-1].name == "🔄 Statut":
+                    embed.set_field_at(len(embed.fields)-1, name="✅ Statut", value="**Résolu**", inline=False)
+                else:
+                    embed.add_field(name="✅ Statut", value="**Résolu**", inline=False)
+                
+                for child in self.children:
+                    if isinstance(child, discord.ui.Button) and child.style != discord.ButtonStyle.link:
+                        child.disabled = True
+                    
+                await interaction.message.edit(embed=embed, view=self)
+                await interaction.response.send_message("✅ Incident clos et archivé dans tes statistiques.", ephemeral=True)
+                
+        except Exception as e:
+            print(f"Erreur résolution ticket: {e}")
+            await interaction.response.send_message("❌ Une erreur technique est survenue.", ephemeral=True)
+        finally:
+            if 'conn' in locals() and conn.open:
+                conn.close()
+
+
 class TicketCloseView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -103,7 +208,6 @@ class TicketCloseView(discord.ui.View):
             await interaction.channel.delete()
         else:
             await interaction.response.send_message("❌ Seul un membre du staff peut fermer ce ticket.", ephemeral=True)
-
 
 class RecrutementView(discord.ui.View):
     def __init__(self):
@@ -153,7 +257,6 @@ class RecrutementView(discord.ui.View):
             await interaction.response.send_message("❌ Erreur lors de la création du ticket. Contacte un administrateur.", ephemeral=True)
             print(f"Erreur Ticket: {e}")
 
-
 class LierCompteModal(discord.ui.Modal, title="Liaison de compte Steam"):
     steamid_input = discord.ui.TextInput(
         label="Ton SteamID64",
@@ -178,7 +281,6 @@ class LierCompteModal(discord.ui.Modal, title="Liaison de compte Steam"):
                 conn.commit()
                 
                 if affected > 0:
-                    # On tente de lui donner le rôle "Lié" directement
                     guild = interaction.client.get_guild(ID_SERVEUR_DISCORD)
                     if guild:
                         member = guild.get_member(interaction.user.id)
@@ -196,7 +298,6 @@ class LierCompteModal(discord.ui.Modal, title="Liaison de compte Steam"):
         finally:
             if 'conn' in locals() and conn.open:
                 conn.close()
-
 
 class LierCompteView(discord.ui.View):
     def __init__(self):
@@ -222,7 +323,20 @@ class SpicyBot(commands.Bot):
         self.add_view(RecrutementView())
         self.add_view(TicketCloseView())
         self.add_view(LierCompteView())
+        self.add_view(TicketStaffView())
         
+        # Mise à jour auto de la BDD pour supporter les messages Discord
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE server_events_tickets ADD COLUMN discord_message_id VARCHAR(50) DEFAULT NULL")
+            conn.commit()
+        except:
+            pass # La colonne existe déjà
+        finally:
+            if 'conn' in locals() and conn.open:
+                conn.close()
+
         print("🔄 Commandes Slash (/) et Vues synchronisées avec succès !")
 
 bot = SpicyBot()
@@ -242,12 +356,13 @@ async def on_ready():
         update_server_status.start()
     if not update_live_leaderboard.is_running():
         update_live_leaderboard.start()
+    if not check_new_tickets.is_running():
+        check_new_tickets.start()
 
 @bot.event
 async def on_member_join(member):
     if member.bot: return
     
-    # Rôle Séparateur
     role_sep = await get_or_create_role(member.guild, NOM_SEPARATEUR, discord.Color.dark_grey())
     if role_sep and role_sep not in member.roles:
         try:
@@ -255,7 +370,6 @@ async def on_member_join(member):
         except discord.Forbidden:
             pass
 
-    # Message Privé pour liaison de compte
     try:
         embed = discord.Embed(
             title="👋 Bienvenue sur Spicy Anomaly !", 
@@ -264,7 +378,46 @@ async def on_member_join(member):
         )
         await member.send(embed=embed, view=LierCompteView())
     except discord.Forbidden:
-        pass # L'utilisateur a bloqué ses messages privés
+        pass
+
+
+@tasks.loop(seconds=15)
+async def check_new_tickets():
+    """Scanne les nouveaux reports in-game et les poste sur Discord pour le Staff"""
+    if not ID_SALON_TICKETS_STAFF:
+        return
+        
+    guild = bot.get_guild(ID_SERVEUR_DISCORD)
+    if not guild: return
+    channel = guild.get_channel(ID_SALON_TICKETS_STAFF)
+    if not channel: return
+
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM server_events_tickets WHERE discord_message_id IS NULL AND (status = 'en attente' OR status = '')")
+            new_tickets = cursor.fetchall()
+
+            for ticket in new_tickets:
+                embed = discord.Embed(
+                    title=f"🚨 Nouveau Signalement IG",
+                    description=f"**Signalé par:** `{ticket['reporter_pseudo']}`\n**Cible:** `{ticket['player_pseudo']}`\n\n🔗 **[Accéder au Panel d'Administration]({URL_PANEL_WEB})**",
+                    color=0xe74c3c
+                )
+                embed.add_field(name="Type", value=f"**{ticket['type_report']}**", inline=True)
+                embed.add_field(name="Raison", value=f"_{ticket['reason']}_", inline=False)
+                embed.set_footer(text=f"Reçu le {ticket['date_report'].strftime('%d/%m/%Y à %H:%M') if isinstance(ticket['date_report'], datetime) else ticket['date_report']}")
+
+                msg = await channel.send(embed=embed, view=TicketStaffView())
+                
+                cursor.execute("UPDATE server_events_tickets SET discord_message_id = %s WHERE id = %s", (str(msg.id), ticket['id']))
+                conn.commit()
+
+    except Exception as e:
+        print(f"Erreur Check Tickets IG: {e}")
+    finally:
+        if 'conn' in locals() and conn.open:
+            conn.close()
 
 
 @tasks.loop(minutes=1)
@@ -288,7 +441,6 @@ async def update_server_status():
 
 @tasks.loop(minutes=10)
 async def update_live_leaderboard():
-    """Récupère le Top 10 XP et le Top 10 Kills et met à jour le salon Discord"""
     if not ID_SALON_CLASSEMENT:
         return
         
@@ -300,11 +452,9 @@ async def update_live_leaderboard():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            # 1. Top 10 XP (Hall of Fame) - CORRIGÉ: Tri par Level d'abord, puis XP
             cursor.execute("SELECT pseudo, xp, level, kills, escapes FROM player_stats ORDER BY level DESC, xp DESC LIMIT 10")
             top_xp = cursor.fetchall()
 
-            # 2. Top 10 Kills - CORRIGÉ: Tri par Ratio K/D comme sur le site web
             cursor.execute("SELECT pseudo, kills, deaths, level FROM player_stats WHERE kills > 0 ORDER BY IF(deaths=0, kills, kills/deaths) DESC, kills DESC LIMIT 10")
             top_kills = cursor.fetchall()
 
@@ -313,7 +463,7 @@ async def update_live_leaderboard():
 
         embed = discord.Embed(
             title="📊 CLASSEMENTS OFFICIELS SPICY ANOMALY",
-            description="Mise à jour automatique toutes les **10 minutes** synchronisée avec le serveur de jeu.\n🔗 **[Voir le Panel Web](https://spicy-anomaly.alwaysdata.net)**",
+            description=f"Mise à jour automatique toutes les **10 minutes** synchronisée avec le serveur de jeu.\n🔗 **[Voir le Panel Web]({URL_PANEL_WEB})**",
             color=0xe63946,
             timestamp=discord.utils.utcnow()
         )
@@ -324,7 +474,6 @@ async def update_live_leaderboard():
             if index == 2: return "🥉"
             return f"`#{index+1}`"
 
-        # --- BLOC 1 : TOP 10 XP ---
         texte_xp = ""
         for i, player in enumerate(top_xp):
             rank = get_rank_str(i)
@@ -338,7 +487,6 @@ async def update_live_leaderboard():
             inline=False
         )
 
-        # --- BLOC 2 : TOP 10 KILLS ---
         texte_kills = ""
         for i, player in enumerate(top_kills):
             rank = get_rank_str(i)
@@ -355,13 +503,11 @@ async def update_live_leaderboard():
 
         embed.set_footer(text="Spicy Anomaly • Classement en Direct")
 
-        # Cherche et modifie le message existant
         async for msg in channel.history(limit=10):
             if msg.author == bot.user and len(msg.embeds) > 0 and "CLASSEMENTS OFFICIELS" in str(msg.embeds[0].title):
                 await msg.edit(embed=embed)
                 return
         
-        # Sinon premier envoi
         await channel.purge(limit=10)
         await channel.send(embed=embed)
 
@@ -466,7 +612,6 @@ async def check_levels_and_roles():
     guild = bot.get_guild(ID_SERVEUR_DISCORD)
     if not guild: return
     
-    # 1. Check Role Séparateur
     role_sep = await get_or_create_role(guild, NOM_SEPARATEUR, discord.Color.dark_grey())
     if role_sep:
         for member in guild.members:
@@ -475,10 +620,8 @@ async def check_levels_and_roles():
                     await member.add_roles(role_sep)
                 except: pass
                 
-    # 2. Check Role Lié
     role_lie = await get_or_create_role(guild, NOM_ROLE_LIE, discord.Color.green())
     
-    # 3. Check Base de Données
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
@@ -489,11 +632,9 @@ async def check_levels_and_roles():
                 member = guild.get_member(int(j['discord_id']))
                 if not member: continue
                 
-                # --- Attribution du Rôle "Lié" pour synchronisation (au cas où ils l'ont raté) ---
                 if role_lie and role_lie not in member.roles:
                     await member.add_roles(role_lie)
                 
-                # --- Attribution des rôles de Niveau ---
                 lvl = j['level']
                 palier = 1 if lvl < 5 else (lvl // 5) * 5
                 nom_role_cible = f"Niveau {palier}"
@@ -585,7 +726,6 @@ async def delier_compte(interaction: discord.Interaction, steamid: str):
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            # On récupère l'id Discord avant de supprimer
             cursor.execute("SELECT discord_id FROM player_stats WHERE steamid = %s", (steamid,))
             res = cursor.fetchone()
             
@@ -594,7 +734,6 @@ async def delier_compte(interaction: discord.Interaction, steamid: str):
             conn.commit()
             
             if affected > 0:
-                # Retrait du rôle "Lié" si le membre est toujours sur le serveur
                 if res and res['discord_id']:
                     member = interaction.guild.get_member(int(res['discord_id']))
                     if member:
@@ -628,7 +767,7 @@ async def voir_stats(interaction: discord.Interaction):
                 
                 embed = discord.Embed(
                     title=f"📊 Statistiques de {joueur['pseudo']}",
-                    url="https://spicy-anomaly.alwaysdata.net",
+                    url=URL_PANEL_WEB,
                     color=0xe63946
                 )
                 embed.add_field(name="Niveau", value=f"⭐ {joueur['level']}", inline=True)
@@ -646,7 +785,6 @@ async def voir_stats(interaction: discord.Interaction):
     finally:
         if 'conn' in locals() and conn.open:
             conn.close()
-
 
 # ==========================================
 # GESTION DU SERVEUR WEB (FLASK)
