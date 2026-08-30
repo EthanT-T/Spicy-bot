@@ -38,7 +38,7 @@ except (TypeError, ValueError):
     ID_SALON_CLASSEMENT = 0
 
 try:
-    ID_SALON_TICKETS_STAFF = int(os.environ.get('ID_SALON_TICKETS_STAFF', 0)) # Salon où le bot enverra les reports IG
+    ID_SALON_TICKETS_STAFF = int(os.environ.get('ID_SALON_TICKETS_STAFF', 0)) 
 except (TypeError, ValueError):
     ID_SALON_TICKETS_STAFF = 0
 
@@ -100,7 +100,6 @@ async def get_or_create_role(guild, role_name, color=discord.Color.default()):
 class TicketStaffView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        # Ajout du bouton vers le panel web en plus des boutons d'action
         self.add_item(discord.ui.Button(label="Aller sur le Panel", style=discord.ButtonStyle.link, url=URL_PANEL_WEB, emoji="🌐"))
 
     @discord.ui.button(label="Prendre le ticket", style=discord.ButtonStyle.primary, custom_id="btn_claim_ticket_ig", emoji="🙋")
@@ -225,7 +224,24 @@ class RecrutementView(discord.ui.View):
         guild = interaction.guild
         categorie = guild.get_channel(ID_CATEGORIE_TICKETS) if ID_CATEGORIE_TICKETS else None
 
-        pseudo_clean = re.sub(r'[^a-z0-9]', '', interaction.user.display_name.lower())
+        # RECHERCHE DU PSEUDO IN-GAME SI LE COMPTE EST LIÉ
+        pseudo_ig = None
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pseudo FROM player_stats WHERE discord_id = %s", (str(interaction.user.id),))
+                res = cursor.fetchone()
+                if res and res['pseudo']:
+                    pseudo_ig = res['pseudo']
+        except:
+            pass
+        finally:
+            if 'conn' in locals() and conn.open:
+                conn.close()
+
+        # Formatage du nom du salon (utilise le pseudo in-game si lié, sinon le pseudo discord)
+        raw_name = pseudo_ig if pseudo_ig else interaction.user.display_name
+        pseudo_clean = re.sub(r'[^a-z0-9]', '', raw_name.lower())
         if not pseudo_clean:
             pseudo_clean = str(interaction.user.id)[:6]
             
@@ -246,9 +262,11 @@ class RecrutementView(discord.ui.View):
             ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=overwrites, reason=f"Ticket recrutement {role_nom}")
             await interaction.response.send_message(f"✅ Ton ticket a été créé : {ticket.mention}", ephemeral=True)
             
+            nom_affichage = pseudo_ig if pseudo_ig else interaction.user.mention
+            
             embed = discord.Embed(
                 title=f"🎫 Candidature {role_nom}",
-                description=f"Bienvenue {interaction.user.mention} !\n\nL'équipe administrative traitera ta demande sous peu. En attendant, merci de préparer ta candidature ou de lister tes motivations ci-dessous.",
+                description=f"Bienvenue **{nom_affichage}** !\n\nL'équipe administrative traitera ta demande sous peu. En attendant, merci de préparer ta candidature ou de lister tes motivations ci-dessous.",
                 color=0x2ecc71 if prefixe == "anim" else 0x3498db
             )
             
@@ -281,6 +299,10 @@ class LierCompteModal(discord.ui.Modal, title="Liaison de compte Steam"):
                 conn.commit()
                 
                 if affected > 0:
+                    cursor.execute("SELECT pseudo FROM player_stats WHERE steamid = %s", (steamid,))
+                    user_data = cursor.fetchone()
+                    in_game_pseudo = user_data['pseudo'] if user_data else None
+
                     guild = interaction.client.get_guild(ID_SERVEUR_DISCORD)
                     if guild:
                         member = guild.get_member(interaction.user.id)
@@ -288,8 +310,19 @@ class LierCompteModal(discord.ui.Modal, title="Liaison de compte Steam"):
                             role_lie = await get_or_create_role(guild, NOM_ROLE_LIE, discord.Color.green())
                             if role_lie:
                                 await member.add_roles(role_lie)
+                            
+                            # MODIFICATION DU PSEUDO DISCORD EN FONCTION DU JEU
+                            if in_game_pseudo:
+                                try:
+                                    await member.edit(nick=in_game_pseudo)
+                                except discord.Forbidden:
+                                    pass # Ignore si le bot n'a pas la permission (ex: Fondateur)
 
-                    await interaction.response.send_message(f"✅ Félicitations ! Ton compte Discord a été lié avec succès au SteamID `{steamid}`. Tu as reçu le rôle **{NOM_ROLE_LIE}**.", ephemeral=True)
+                    msg = f"✅ Félicitations ! Compte lié avec succès au SteamID `{steamid}`."
+                    if in_game_pseudo:
+                        msg += f" Ton pseudo Discord a été mis à jour en **{in_game_pseudo}**."
+                        
+                    await interaction.response.send_message(msg, ephemeral=True)
                 else:
                     await interaction.response.send_message("❌ SteamID introuvable dans la base de données. Assure-toi de t'être connecté au moins une fois sur le serveur ou le site web.", ephemeral=True)
         except Exception as e:
@@ -325,14 +358,13 @@ class SpicyBot(commands.Bot):
         self.add_view(LierCompteView())
         self.add_view(TicketStaffView())
         
-        # Mise à jour auto de la BDD pour supporter les messages Discord
         try:
             conn = get_db_connection()
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE server_events_tickets ADD COLUMN discord_message_id VARCHAR(50) DEFAULT NULL")
             conn.commit()
         except:
-            pass # La colonne existe déjà
+            pass 
         finally:
             if 'conn' in locals() and conn.open:
                 conn.close()
@@ -383,7 +415,6 @@ async def on_member_join(member):
 
 @tasks.loop(seconds=15)
 async def check_new_tickets():
-    """Scanne les nouveaux reports in-game et les poste sur Discord pour le Staff"""
     if not ID_SALON_TICKETS_STAFF:
         return
         
@@ -401,7 +432,7 @@ async def check_new_tickets():
             for ticket in new_tickets:
                 embed = discord.Embed(
                     title=f"🚨 Nouveau Signalement IG",
-                    description=f"**Signalé par:** `{ticket['reporter_pseudo']}`\n**Cible:** `{ticket['player_pseudo']}`\n\n🔗 **[Accéder au Panel d'Administration]({URL_PANEL_WEB})**",
+                    description=f"**Signalé par:** `{ticket['reporter_pseudo']}`\n**Cible:** `{ticket['player_pseudo']}`",
                     color=0xe74c3c
                 )
                 embed.add_field(name="Type", value=f"**{ticket['type_report']}**", inline=True)
@@ -625,7 +656,8 @@ async def check_levels_and_roles():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT discord_id, level FROM player_stats WHERE discord_id IS NOT NULL")
+            # Récupération du pseudo pour la synchro du profil Discord
+            cursor.execute("SELECT discord_id, level, pseudo FROM player_stats WHERE discord_id IS NOT NULL")
             joueurs = cursor.fetchall()
             
             for j in joueurs:
@@ -634,6 +666,13 @@ async def check_levels_and_roles():
                 
                 if role_lie and role_lie not in member.roles:
                     await member.add_roles(role_lie)
+
+                # FORCAGE DU PSEUDO DISCORD = PSEUDO IN-GAME
+                if j['pseudo'] and member.display_name != j['pseudo'] and member.nick != j['pseudo']:
+                    try:
+                        await member.edit(nick=j['pseudo'])
+                    except discord.Forbidden:
+                        pass # Le bot ignore silencieusement s'il n'a pas les permissions (ex: sur le Fondateur)
                 
                 lvl = j['level']
                 palier = 1 if lvl < 5 else (lvl // 5) * 5
@@ -646,7 +685,7 @@ async def check_levels_and_roles():
                 if role_cible and role_cible not in member.roles:
                     await member.add_roles(role_cible)
     except Exception as e:
-        print(f"Erreur rôles: {e}")
+        print(f"Erreur rôles/pseudos: {e}")
     finally:
         if 'conn' in locals() and conn.open:
             conn.close()
@@ -661,7 +700,7 @@ async def check_levels_and_roles():
 async def setup_liaison_cmd(interaction: discord.Interaction, salon: discord.TextChannel):
     embed = discord.Embed(
         title="🔗 Liaison de compte Steam", 
-        description="Associe ton compte Discord à ton SteamID pour suivre tes statistiques en jeu, monter en niveau et débloquer automatiquement le rôle **Lié** !\n\nClique sur le bouton ci-dessous pour lancer la procédure :", 
+        description="Associe ton compte Discord à ton SteamID pour suivre tes statistiques en jeu, monter en niveau et débloquer automatiquement le rôle **Lié** !\n\n*Note : Ton pseudo Discord sera automatiquement synchronisé avec ton pseudo en jeu.*\n\nClique sur le bouton ci-dessous pour lancer la procédure :", 
         color=0xe63946
     )
     try:
