@@ -39,6 +39,7 @@ except (TypeError, ValueError):
 
 NOM_ROLE_REPERE = "VIP"
 NOM_SEPARATEUR = "─── Niveaux ───"
+NOM_ROLE_LIE = "Lié" # Nouveau rôle
 
 DB_HOST = os.environ.get('DB_HOST', 'mysql-spicy-anomaly.alwaysdata.net')
 DB_USER = os.environ.get('DB_USER', 'spicy-anomaly_admin')
@@ -51,7 +52,43 @@ intents = discord.Intents.default()
 intents.members = True
 
 # ==========================================
-# VUES PERSISTANTES (Boutons Tickets)
+# FONCTIONS UTILITAIRES
+# ==========================================
+
+def get_db_connection():
+    return pymysql.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME,
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+def is_valid_url(url):
+    regex = re.compile(
+        r'^(?:http|ftp)s?://'
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'
+        r'localhost|'
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+        r'(?::\d+)?(?:/[-A-Z0-9+&@#/%=~_|!:,.;]*)?$', re.IGNORECASE)
+    return re.match(regex, url) is not None
+
+async def get_or_create_role(guild, role_name, color=discord.Color.default()):
+    role = discord.utils.get(guild.roles, name=role_name)
+    if not role:
+        try:
+            role = await guild.create_role(name=role_name, color=color, reason="Création auto système de bot")
+            print(f"✨ Nouveau rôle créé : {role_name}")
+            role_repere = discord.utils.get(guild.roles, name=NOM_ROLE_REPERE)
+            if role_repere and guild.me.top_role.position > role_repere.position:
+                new_position = max(1, role_repere.position - 1)
+                await role.edit(position=new_position)
+        except Exception as e:
+            print(f"Erreur création rôle {role_name}: {e}")
+    return role
+
+# ==========================================
+# VUES PERSISTANTES ET MODAUX
 # ==========================================
 
 class TicketCloseView(discord.ui.View):
@@ -116,6 +153,59 @@ class RecrutementView(discord.ui.View):
             await interaction.response.send_message("❌ Erreur lors de la création du ticket. Contacte un administrateur.", ephemeral=True)
             print(f"Erreur Ticket: {e}")
 
+
+class LierCompteModal(discord.ui.Modal, title="Liaison de compte Steam"):
+    steamid_input = discord.ui.TextInput(
+        label="Ton SteamID64",
+        placeholder="Ex: 76561198...",
+        min_length=17,
+        max_length=25,
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        steamid = self.steamid_input.value.strip()
+        if not steamid.endswith('@steam'):
+            steamid += '@steam'
+            
+        discord_id = str(interaction.user.id)
+        
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                sql = "UPDATE player_stats SET discord_id = %s WHERE steamid = %s"
+                affected = cursor.execute(sql, (discord_id, steamid))
+                conn.commit()
+                
+                if affected > 0:
+                    # On tente de lui donner le rôle "Lié" directement
+                    guild = interaction.client.get_guild(ID_SERVEUR_DISCORD)
+                    if guild:
+                        member = guild.get_member(interaction.user.id)
+                        if member:
+                            role_lie = await get_or_create_role(guild, NOM_ROLE_LIE, discord.Color.green())
+                            if role_lie:
+                                await member.add_roles(role_lie)
+
+                    await interaction.response.send_message(f"✅ Félicitations ! Ton compte Discord a été lié avec succès au SteamID `{steamid}`. Tu as reçu le rôle **{NOM_ROLE_LIE}**.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("❌ SteamID introuvable dans la base de données. Assure-toi de t'être connecté au moins une fois sur le serveur ou le site web.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message("❌ Une erreur technique est survenue.", ephemeral=True)
+            print(f"Erreur liaison: {e}")
+        finally:
+            if 'conn' in locals() and conn.open:
+                conn.close()
+
+
+class LierCompteView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🔗 Lier mon compte Steam", style=discord.ButtonStyle.success, custom_id="btn_lier_compte")
+    async def btn_lier(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(LierCompteModal())
+
 # ==========================================
 # CLASSE BOT PRINCIPALE
 # ==========================================
@@ -131,42 +221,11 @@ class SpicyBot(commands.Bot):
         
         self.add_view(RecrutementView())
         self.add_view(TicketCloseView())
+        self.add_view(LierCompteView())
         
         print("🔄 Commandes Slash (/) et Vues synchronisées avec succès !")
 
 bot = SpicyBot()
-
-def get_db_connection():
-    return pymysql.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASS,
-        database=DB_NAME,
-        cursorclass=pymysql.cursors.DictCursor
-    )
-
-def is_valid_url(url):
-    regex = re.compile(
-        r'^(?:http|ftp)s?://'
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'
-        r'localhost|'
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-        r'(?::\d+)?(?:/[-A-Z0-9+&@#/%=~_|!:,.;]*)?$', re.IGNORECASE)
-    return re.match(regex, url) is not None
-
-async def get_or_create_role(guild, role_name, color=discord.Color.default()):
-    role = discord.utils.get(guild.roles, name=role_name)
-    if not role:
-        try:
-            role = await guild.create_role(name=role_name, color=color, reason="Création auto système de niveau")
-            print(f"✨ Nouveau rôle créé : {role_name}")
-            role_repere = discord.utils.get(guild.roles, name=NOM_ROLE_REPERE)
-            if role_repere and guild.me.top_role.position > role_repere.position:
-                new_position = max(1, role_repere.position - 1)
-                await role.edit(position=new_position)
-        except Exception as e:
-            print(f"Erreur création rôle {role_name}: {e}")
-    return role
 
 # ==========================================
 # EVENEMENTS ET BOUCLES
@@ -187,12 +246,26 @@ async def on_ready():
 @bot.event
 async def on_member_join(member):
     if member.bot: return
+    
+    # Rôle Séparateur
     role_sep = await get_or_create_role(member.guild, NOM_SEPARATEUR, discord.Color.dark_grey())
     if role_sep and role_sep not in member.roles:
         try:
             await member.add_roles(role_sep)
         except discord.Forbidden:
             pass
+
+    # Message Privé pour liaison de compte
+    try:
+        embed = discord.Embed(
+            title="👋 Bienvenue sur Spicy Anomaly !", 
+            description="Pour suivre tes statistiques (Kills, XP, Niveau), apparaître dans le classement et débloquer des rôles exclusifs, tu dois lier ton compte Steam à ton compte Discord.\n\nClique sur le bouton ci-dessous pour le faire ! 👇", 
+            color=0xe63946
+        )
+        await member.send(embed=embed, view=LierCompteView())
+    except discord.Forbidden:
+        pass # L'utilisateur a bloqué ses messages privés
+
 
 @tasks.loop(minutes=1)
 async def update_server_status():
@@ -212,6 +285,7 @@ async def update_server_status():
     except Exception:
         await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
 
+
 @tasks.loop(minutes=10)
 async def update_live_leaderboard():
     """Récupère le Top 10 XP et le Top 10 Kills et met à jour le salon Discord"""
@@ -226,12 +300,12 @@ async def update_live_leaderboard():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            # 1. Top 10 XP (Hall of Fame)
-            cursor.execute("SELECT pseudo, xp, level, kills, escapes FROM player_stats ORDER BY xp DESC LIMIT 10")
+            # 1. Top 10 XP (Hall of Fame) - CORRIGÉ: Tri par Level d'abord, puis XP
+            cursor.execute("SELECT pseudo, xp, level, kills, escapes FROM player_stats ORDER BY level DESC, xp DESC LIMIT 10")
             top_xp = cursor.fetchall()
 
-            # 2. Top 10 Kills
-            cursor.execute("SELECT pseudo, kills, deaths, level FROM player_stats ORDER BY kills DESC LIMIT 10")
+            # 2. Top 10 Kills - CORRIGÉ: Tri par Ratio K/D comme sur le site web
+            cursor.execute("SELECT pseudo, kills, deaths, level FROM player_stats WHERE kills > 0 ORDER BY IF(deaths=0, kills, kills/deaths) DESC, kills DESC LIMIT 10")
             top_kills = cursor.fetchall()
 
         if not top_xp and not top_kills:
@@ -274,7 +348,7 @@ async def update_live_leaderboard():
             texte_kills += f"{rank} **{player['pseudo']}** • **{k}** Kills (Ratio K/D: `{kd}`)\n"
 
         embed.add_field(
-            name="💀 Top 10 Tueurs (Kills)",
+            name="💀 Top 10 Tueurs (Ratio K/D)",
             value=texte_kills if texte_kills else "Aucune donnée.",
             inline=False
         )
@@ -296,6 +370,7 @@ async def update_live_leaderboard():
     finally:
         if 'conn' in locals() and conn.open:
             conn.close()
+
 
 @tasks.loop(minutes=1)
 async def check_new_events():
@@ -385,9 +460,75 @@ async def check_new_events():
         if 'conn' in locals() and conn.open:
             conn.close()
 
+
+@tasks.loop(minutes=5)
+async def check_levels_and_roles():
+    guild = bot.get_guild(ID_SERVEUR_DISCORD)
+    if not guild: return
+    
+    # 1. Check Role Séparateur
+    role_sep = await get_or_create_role(guild, NOM_SEPARATEUR, discord.Color.dark_grey())
+    if role_sep:
+        for member in guild.members:
+            if not member.bot and role_sep not in member.roles:
+                try:
+                    await member.add_roles(role_sep)
+                except: pass
+                
+    # 2. Check Role Lié
+    role_lie = await get_or_create_role(guild, NOM_ROLE_LIE, discord.Color.green())
+    
+    # 3. Check Base de Données
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT discord_id, level FROM player_stats WHERE discord_id IS NOT NULL")
+            joueurs = cursor.fetchall()
+            
+            for j in joueurs:
+                member = guild.get_member(int(j['discord_id']))
+                if not member: continue
+                
+                # --- Attribution du Rôle "Lié" pour synchronisation (au cas où ils l'ont raté) ---
+                if role_lie and role_lie not in member.roles:
+                    await member.add_roles(role_lie)
+                
+                # --- Attribution des rôles de Niveau ---
+                lvl = j['level']
+                palier = 1 if lvl < 5 else (lvl // 5) * 5
+                nom_role_cible = f"Niveau {palier}"
+                role_cible = await get_or_create_role(guild, nom_role_cible, discord.Color.teal())
+                
+                roles_a_retirer = [r for r in member.roles if r.name.startswith("Niveau ") and r.name != nom_role_cible]
+                if roles_a_retirer:
+                    await member.remove_roles(*roles_a_retirer)
+                if role_cible and role_cible not in member.roles:
+                    await member.add_roles(role_cible)
+    except Exception as e:
+        print(f"Erreur rôles: {e}")
+    finally:
+        if 'conn' in locals() and conn.open:
+            conn.close()
+
 # ==========================================
 # COMMANDES SLASH (/)
 # ==========================================
+
+@bot.tree.command(name="setup_liaison", description="[STAFF] Créer le bouton permanent de liaison de compte dans un salon")
+@app_commands.describe(salon="Le salon Discord où envoyer le bouton")
+@app_commands.default_permissions(manage_guild=True)
+async def setup_liaison_cmd(interaction: discord.Interaction, salon: discord.TextChannel):
+    embed = discord.Embed(
+        title="🔗 Liaison de compte Steam", 
+        description="Associe ton compte Discord à ton SteamID pour suivre tes statistiques en jeu, monter en niveau et débloquer automatiquement le rôle **Lié** !\n\nClique sur le bouton ci-dessous pour lancer la procédure :", 
+        color=0xe63946
+    )
+    try:
+        await salon.send(embed=embed, view=LierCompteView())
+        await interaction.response.send_message(f"✅ Le panneau de liaison a été généré avec succès dans {salon.mention}.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Je n'ai pas la permission d'envoyer un message dans ce salon.", ephemeral=True)
+
 
 @bot.tree.command(name="recrutement", description="[STAFF] Gérer l'annonce de recrutement et générer les boutons de tickets")
 @app_commands.describe(
@@ -434,29 +575,6 @@ async def recrutement_cmd(interaction: discord.Interaction, salon: discord.TextC
         await interaction.response.send_message("❌ Je n'ai pas la permission d'envoyer un message dans ce salon.", ephemeral=True)
 
 
-@bot.tree.command(name="lier", description="Lie ton compte Discord à ton SteamID64")
-@app_commands.describe(steamid="Ton SteamID64 (ex: 7656119...)")
-async def lier_compte(interaction: discord.Interaction, steamid: str):
-    if not steamid.endswith('@steam'):
-        steamid += '@steam'
-    discord_id = str(interaction.user.id)
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            sql = "UPDATE player_stats SET discord_id = %s WHERE steamid = %s"
-            affected = cursor.execute(sql, (discord_id, steamid))
-            conn.commit()
-            if affected > 0:
-                await interaction.response.send_message(f"✅ Ton compte Discord a été lié au SteamID `{steamid}` !", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ SteamID introuvable dans la base de données.", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message("❌ Erreur de base de données.", ephemeral=True)
-    finally:
-        if 'conn' in locals() and conn.open:
-            conn.close()
-
-
 @bot.tree.command(name="delier", description="[STAFF] Délie un compte Discord d'un SteamID64")
 @app_commands.describe(steamid="Le SteamID64 à délier (ex: 7656119...)")
 @app_commands.default_permissions(manage_guild=True)
@@ -467,11 +585,23 @@ async def delier_compte(interaction: discord.Interaction, steamid: str):
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
+            # On récupère l'id Discord avant de supprimer
+            cursor.execute("SELECT discord_id FROM player_stats WHERE steamid = %s", (steamid,))
+            res = cursor.fetchone()
+            
             sql = "UPDATE player_stats SET discord_id = NULL WHERE steamid = %s"
             affected = cursor.execute(sql, (steamid,))
             conn.commit()
             
             if affected > 0:
+                # Retrait du rôle "Lié" si le membre est toujours sur le serveur
+                if res and res['discord_id']:
+                    member = interaction.guild.get_member(int(res['discord_id']))
+                    if member:
+                        role_lie = discord.utils.get(interaction.guild.roles, name=NOM_ROLE_LIE)
+                        if role_lie in member.roles:
+                            await member.remove_roles(role_lie)
+                            
                 await interaction.response.send_message(f"✅ Le compte associé au SteamID `{steamid}` a été délié avec succès !", ephemeral=True)
             else:
                 await interaction.response.send_message("❌ SteamID introuvable dans la base de données ou déjà délié.", ephemeral=True)
@@ -489,9 +619,13 @@ async def voir_stats(interaction: discord.Interaction):
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT pseudo, xp, level, kills, escapes FROM player_stats WHERE discord_id = %s", (discord_id,))
+            cursor.execute("SELECT pseudo, xp, level, kills, deaths, escapes FROM player_stats WHERE discord_id = %s", (discord_id,))
             joueur = cursor.fetchone()
             if joueur:
+                k = joueur['kills'] or 0
+                d = joueur['deaths'] or 0
+                kd = f"{(k/d):.2f}" if d > 0 else str(k)
+                
                 embed = discord.Embed(
                     title=f"📊 Statistiques de {joueur['pseudo']}",
                     url="https://spicy-anomaly.alwaysdata.net",
@@ -499,11 +633,14 @@ async def voir_stats(interaction: discord.Interaction):
                 )
                 embed.add_field(name="Niveau", value=f"⭐ {joueur['level']}", inline=True)
                 embed.add_field(name="XP Total", value=f"✨ {joueur['xp']} XP", inline=True)
-                embed.add_field(name="Kills", value=f"💀 {joueur['kills']}", inline=True)
                 embed.add_field(name="Évasions", value=f"🏃 {joueur['escapes']}", inline=True)
+                embed.add_field(name="Kills", value=f"💀 {k}", inline=True)
+                embed.add_field(name="Morts", value=f"🪦 {d}", inline=True)
+                embed.add_field(name="Ratio K/D", value=f"📈 {kd}", inline=True)
+                
                 await interaction.response.send_message(embed=embed)
             else:
-                await interaction.response.send_message("❌ Ton compte n'est pas lié.", ephemeral=True)
+                await interaction.response.send_message("❌ Ton compte n'est pas lié. Utilise le bouton de liaison envoyé en MP ou dans le salon d'accueil !", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message("❌ Erreur de base de données.", ephemeral=True)
     finally:
@@ -511,40 +648,9 @@ async def voir_stats(interaction: discord.Interaction):
             conn.close()
 
 
-@tasks.loop(minutes=5)
-async def check_levels_and_roles():
-    guild = bot.get_guild(ID_SERVEUR_DISCORD)
-    if not guild: return
-    role_sep = await get_or_create_role(guild, NOM_SEPARATEUR, discord.Color.dark_grey())
-    if role_sep:
-        for member in guild.members:
-            if not member.bot and role_sep not in member.roles:
-                try:
-                    await member.add_roles(role_sep)
-                except: pass
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT discord_id, level FROM player_stats WHERE discord_id IS NOT NULL")
-            joueurs = cursor.fetchall()
-            for j in joueurs:
-                member = guild.get_member(int(j['discord_id']))
-                if not member: continue
-                lvl = j['level']
-                palier = 1 if lvl < 5 else (lvl // 5) * 5
-                nom_role_cible = f"Niveau {palier}"
-                role_cible = await get_or_create_role(guild, nom_role_cible, discord.Color.teal())
-                roles_a_retirer = [r for r in member.roles if r.name.startswith("Niveau ") and r.name != nom_role_cible]
-                if roles_a_retirer:
-                    await member.remove_roles(*roles_a_retirer)
-                if role_cible and role_cible not in member.roles:
-                    await member.add_roles(role_cible)
-    except Exception as e:
-        print(f"Erreur rôles: {e}")
-    finally:
-        if 'conn' in locals() and conn.open:
-            conn.close()
-
+# ==========================================
+# GESTION DU SERVEUR WEB (FLASK)
+# ==========================================
 
 app = Flask('')
 @app.route('/')
