@@ -52,8 +52,8 @@ Si on te pose une question sur un joueur précis, dis d'ouvrir un ticket ou d'al
 
 if IA_TOKEN:
     genai.configure(api_key=IA_TOKEN)
-    model_ia = genai.GenerativeModel('gemini-1.5-flash')
-    model_parler = genai.GenerativeModel('gemini-1.5-flash', system_instruction=BIBLE_DU_SERVEUR)
+    model_ia = genai.GenerativeModel('gemini-2.5-flash')
+    model_parler = genai.GenerativeModel('gemini-2.5-flash', system_instruction=BIBLE_DU_SERVEUR)
 
 # DB Config (Synchrone)
 DB_HOST = os.environ.get('DB_HOST', 'mysql-spicy-anomaly.alwaysdata.net')
