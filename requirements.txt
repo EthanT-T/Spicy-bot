@@ -2,4 +2,4 @@ discord.py
 pymysql
 flask
 aiohttp
-pytz
+google-generativeai
