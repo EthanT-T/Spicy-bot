@@ -9,50 +9,13 @@ from datetime import datetime
 import aiohttp
 import re
 import asyncio
-import io # Ajouté pour générer le fichier texte en mémoire
+import io 
 
 # ==========================================
-# CONFIGURATION (Via Variables d'Environnement)
+# CONFIGURATION DE BASE
 # ==========================================
-
-TOKEN = os.environ.get('DISCORD_TOKEN')
-
-# IDs Serveur et Salons
-try: ID_SERVEUR_DISCORD = int(os.environ.get('ID_SERVEUR_DISCORD', 1392952674604814487))
-except: ID_SERVEUR_DISCORD = 1392952674604814487
-
-try: ID_SALON_ANNONCES = int(os.environ.get('ID_SALON_ANNONCES', 0))
-except: ID_SALON_ANNONCES = 0
-
-try: ID_CATEGORIE_TICKETS = int(os.environ.get('ID_CATEGORIE_TICKETS', 0))
-except: ID_CATEGORIE_TICKETS = 0
-
-try: ID_CATEGORIE_SUPPORT = int(os.environ.get('ID_CATEGORIE_SUPPORT', 0))
-except: ID_CATEGORIE_SUPPORT = 0
-
-try: ID_SALON_CLASSEMENT = int(os.environ.get('ID_SALON_CLASSEMENT', 0))
-except: ID_SALON_CLASSEMENT = 0
-
-try: ID_SALON_TICKETS_STAFF = int(os.environ.get('ID_SALON_TICKETS_STAFF', 0)) 
-except: ID_SALON_TICKETS_STAFF = 0
-
-try: ID_SALON_STATUT = int(os.environ.get('ID_SALON_STATUT', 0))
-except: ID_SALON_STATUT = 0
-
-# NOUVEAU : Salon pour les transcripts
-try: ID_SALON_TRANSCRIPTS = int(os.environ.get('ID_SALON_TRANSCRIPTS', 0))
-except: ID_SALON_TRANSCRIPTS = 0
-
-# IDs Rôles 
-try: ID_ROLE_SPICY_TEAM = int(os.environ.get('ID_ROLE_SPICY_TEAM', 0))
-except: ID_ROLE_SPICY_TEAM = 0
-
-try: ID_ROLE_MANAGER = int(os.environ.get('ID_ROLE_MANAGER', 0))
-except: ID_ROLE_MANAGER = 0
-
-NOM_ROLE_REPERE = "VIP"
-NOM_SEPARATEUR = "─── Niveaux ───"
-NOM_ROLE_LIE = "Lié"
+TOKEN = os.environ.get('DISCORD_TOKEN', 'TON_TOKEN_ICI')
+ID_SERVEUR_DISCORD = 1392952674604814487
 
 # DB Config
 DB_HOST = os.environ.get('DB_HOST', 'mysql-spicy-anomaly.alwaysdata.net')
@@ -63,13 +26,18 @@ DB_NAME = os.environ.get('DB_NAME', 'spicy-anomaly_stats')
 URL_API_STATUS = os.environ.get('URL_API_STATUS', 'https://spicy-anomaly.alwaysdata.net/api_public.php')
 URL_PANEL_WEB = "https://spicy-anomaly.alwaysdata.net"
 
+NOM_ROLE_REPERE = "VIP"
+NOM_SEPARATEUR = "─── Niveaux ───"
+NOM_ROLE_LIE = "Lié"
+
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
 # ==========================================
-# FONCTIONS UTILITAIRES
+# GESTION DYNAMIQUE DE LA CONFIGURATION (En BDD)
 # ==========================================
+CONFIG_CACHE = {}
 
 def get_db_connection():
     return pymysql.connect(
@@ -79,6 +47,57 @@ def get_db_connection():
         database=DB_NAME,
         cursorclass=pymysql.cursors.DictCursor
     )
+
+def init_db():
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS discord_config (
+                    config_key VARCHAR(50) PRIMARY KEY,
+                    config_value VARCHAR(255)
+                )
+            """)
+        conn.commit()
+    except Exception as e:
+        print(f"Erreur init DB Config: {e}")
+    finally:
+        if 'conn' in locals() and conn.open: conn.close()
+
+def get_config(key, default=0):
+    if key in CONFIG_CACHE:
+        return CONFIG_CACHE[key]
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT config_value FROM discord_config WHERE config_key = %s", (key,))
+            res = cursor.fetchone()
+        val = int(res['config_value']) if res else default
+        CONFIG_CACHE[key] = val
+        return val
+    except:
+        return default
+    finally:
+        if 'conn' in locals() and conn.open: conn.close()
+
+def set_config(key, value):
+    CONFIG_CACHE[key] = int(value)
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO discord_config (config_key, config_value) 
+                VALUES (%s, %s) ON DUPLICATE KEY UPDATE config_value = %s
+            """, (key, str(value), str(value)))
+        conn.commit()
+    except Exception as e:
+        print(f"Erreur save config: {e}")
+    finally:
+        if 'conn' in locals() and conn.open: conn.close()
+
+# ==========================================
+# FONCTIONS UTILITAIRES
+# ==========================================
 
 async def get_or_create_role(guild, role_name, color=discord.Color.default()):
     role = discord.utils.get(guild.roles, name=role_name)
@@ -91,65 +110,58 @@ async def get_or_create_role(guild, role_name, color=discord.Color.default()):
         except: pass
     return role
 
-def get_ticket_overwrites(guild, user):
+def get_ticket_overwrites(guild, user, type_ticket="support"):
+    """
+    Définit les permissions du ticket selon qu'il soit support ou recrutement.
+    """
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
         user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
         guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
     }
-    role_spicy = guild.get_role(ID_ROLE_SPICY_TEAM)
-    role_manager = guild.get_role(ID_ROLE_MANAGER)
-    if role_spicy: overwrites[role_spicy] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-    if role_manager: overwrites[role_manager] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+    
+    role_spicy = guild.get_role(get_config('ID_ROLE_SPICY_TEAM'))
+    role_manager = guild.get_role(get_config('ID_ROLE_MANAGER'))
+    
+    # Les Managers voient toujours tout
+    if role_manager: 
+        overwrites[role_manager] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        
+    # Le reste du Staff (Spicy Team) ne voit que les tickets support classiques, PAS les recrutements
+    if role_spicy and type_ticket == "support": 
+        overwrites[role_spicy] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        
     return overwrites
 
 async def process_ticket_closure(channel, closed_by, reason):
-    """Génère le transcript, l'envoie en MP, dans le salon de logs et supprime le ticket."""
-    
-    # 1. Génération du transcript
     messages = [msg async for msg in channel.history(limit=None, oldest_first=True)]
     transcript_text = f"--- Transcript du salon {channel.name} ---\nDate: {discord.utils.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\nFermé par: {closed_by.display_name}\nRaison: {reason}\n\n"
     for msg in messages:
         transcript_text += f"[{msg.created_at.strftime('%Y-%m-%d %H:%M')}] {msg.author.display_name}: {msg.clean_content}\n"
 
-    # 2. Trouver l'auteur du ticket (le membre non-staff dans les permissions du salon)
     ticket_owner = None
     for target, overwrite in channel.overwrites.items():
         if isinstance(target, discord.Member) and not target.bot:
-            # Si le membre n'a pas la permission de gérer les salons, c'est sûrement l'auteur
             if not overwrite.manage_channels:
                 ticket_owner = target
                 break
 
-    # 3. Envoi du MP à l'auteur
     if ticket_owner:
         try:
-            embed_dm = discord.Embed(
-                title=f"🔒 Ton ticket `{channel.name}` a été fermé",
-                description=f"**Raison :** {reason}\n**Fermé par :** {closed_by.mention}",
-                color=0xe74c3c
-            )
+            embed_dm = discord.Embed(title=f"🔒 Ton ticket `{channel.name}` a été fermé", description=f"**Raison :** {reason}\n**Fermé par :** {closed_by.mention}", color=0xe74c3c)
             file_dm = discord.File(io.BytesIO(transcript_text.encode('utf-8')), filename=f"transcript-{channel.name}.txt")
             await ticket_owner.send(embed=embed_dm, file=file_dm)
-        except discord.Forbidden:
-            pass # Le joueur a désactivé ses MPs
+        except discord.Forbidden: pass
 
-    # 4. Envoi dans le salon des logs
-    if ID_SALON_TRANSCRIPTS:
-        log_channel = channel.guild.get_channel(ID_SALON_TRANSCRIPTS)
+    salon_logs = get_config('ID_SALON_TRANSCRIPTS')
+    if salon_logs:
+        log_channel = channel.guild.get_channel(salon_logs)
         if log_channel:
-            embed_log = discord.Embed(
-                title=f"📄 Transcript : {channel.name}",
-                description=f"**Fermé par :** {closed_by.mention}\n**Raison :** {reason}",
-                color=0x2c3e50
-            )
-            if ticket_owner:
-                embed_log.add_field(name="Propriétaire", value=ticket_owner.mention)
-                
+            embed_log = discord.Embed(title=f"📄 Transcript : {channel.name}", description=f"**Fermé par :** {closed_by.mention}\n**Raison :** {reason}", color=0x2c3e50)
+            if ticket_owner: embed_log.add_field(name="Propriétaire", value=ticket_owner.mention)
             file_log = discord.File(io.BytesIO(transcript_text.encode('utf-8')), filename=f"{channel.name}.txt")
             await log_channel.send(embed=embed_log, file=file_log)
 
-    # 5. Suppression du salon
     await asyncio.sleep(2)
     await channel.delete()
 
@@ -159,35 +171,30 @@ async def process_ticket_closure(channel, closed_by, reason):
 # ==========================================
 
 class ModalCloseTicket(discord.ui.Modal, title="Fermeture du ticket"):
-    raison = discord.ui.TextInput(
-        label="Raison de la fermeture",
-        style=discord.TextStyle.paragraph,
-        required=True,
-        placeholder="Ex: Problème résolu, joueur remboursé..."
-    )
-
+    raison = discord.ui.TextInput(label="Raison de la fermeture", style=discord.TextStyle.paragraph, required=True)
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.send_message("🔒 **Fermeture en cours et sauvegarde du transcript...**")
         await process_ticket_closure(interaction.channel, interaction.user, self.raison.value)
 
 class TicketCloseView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
+    def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Fermer le ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket", emoji="🔒")
     async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.guild_permissions.manage_channels or discord.utils.get(interaction.user.roles, id=ID_ROLE_SPICY_TEAM):
+        # Vérifie si l'user a le droit de fermer (Manage Channels OU Rôle Spicy OU Rôle Manager)
+        has_perm = interaction.user.guild_permissions.manage_channels
+        if get_config('ID_ROLE_SPICY_TEAM') and discord.utils.get(interaction.user.roles, id=get_config('ID_ROLE_SPICY_TEAM')): has_perm = True
+        if get_config('ID_ROLE_MANAGER') and discord.utils.get(interaction.user.roles, id=get_config('ID_ROLE_MANAGER')): has_perm = True
+        
+        if has_perm:
             await interaction.response.send_modal(ModalCloseTicket())
-        else:
+        else: 
             await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
 
 class FAQCloseView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="✅ Ceci a résolu mon problème (Fermer)", style=discord.ButtonStyle.success, custom_id="faq_close_ticket")
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="✅ Ceci a résolu mon problème", style=discord.ButtonStyle.success, custom_id="faq_close_ticket")
     async def btn_faq_close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("🔒 **Super ! Fermeture du ticket et sauvegarde du transcript...**")
+        await interaction.response.send_message("🔒 **Super ! Fermeture du ticket en cours...**")
         await process_ticket_closure(interaction.channel, interaction.user, "Résolu par la FAQ automatique.")
 
 class ModalRecrutement(discord.ui.Modal):
@@ -201,30 +208,38 @@ class ModalRecrutement(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        categorie = guild.get_channel(ID_CATEGORIE_TICKETS) if ID_CATEGORIE_TICKETS else None
+        cat_id = get_config('ID_CATEGORIE_TICKETS')
+        categorie = guild.get_channel(cat_id) if cat_id else None
 
         pseudo_clean = re.sub(r'[^a-z0-9]', '', interaction.user.display_name.lower()) or str(interaction.user.id)[:6]
         nom_salon = f"candid-{self.prefixe}-{pseudo_clean}"
 
         if discord.utils.get(guild.text_channels, name=nom_salon):
-            return await interaction.followup.send(f"❌ Tu as déjà un ticket de candidature ouvert.", ephemeral=True)
+            return await interaction.followup.send(f"❌ Tu as déjà une candidature en cours.", ephemeral=True)
 
         try:
-            ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=get_ticket_overwrites(guild, interaction.user))
+            # ICI ON PRECISE BIEN LE TYPE "recrutement" POUR CACHER LE TICKET A LA SPICY TEAM
+            ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=get_ticket_overwrites(guild, interaction.user, "recrutement"))
             await interaction.followup.send(f"✅ Ticket créé : {ticket.mention}", ephemeral=True)
+            
             embed = discord.Embed(title=f"🎫 Candidature : {self.role_nom}", description=f"Bienvenue {interaction.user.mention} !\n\n**Motivations :**\n```\n{self.motivations.value}\n```", color=0x3498db)
-            mention_staff = f"<@&{ID_ROLE_SPICY_TEAM}>" if ID_ROLE_SPICY_TEAM else "@here"
-            await ticket.send(f"{interaction.user.mention} | {mention_staff}", embed=embed, view=TicketCloseView())
+            
+            # Le ping fantôme pour la Spicy Team (si configuré)
+            role_staff_id = get_config('ID_ROLE_SPICY_TEAM')
+            mention_staff = f"<@&{role_staff_id}>" if role_staff_id else ""
+            
+            await ticket.send(content=f"{interaction.user.mention} | {mention_staff}", embed=embed, view=TicketCloseView())
         except Exception as e:
-            await interaction.followup.send("❌ Erreur de création.", ephemeral=True)
+            await interaction.followup.send("❌ Erreur de création du ticket.", ephemeral=True)
 
-class RecrutementView(discord.ui.View):
+class RecrutementPersistentView(discord.ui.View):
+    """Cette vue tourne en permanence pour capter les clics sur l'embed de recrutement."""
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="Postuler Modérateur", style=discord.ButtonStyle.primary, custom_id="ticket_mod", emoji="🛡️")
+    @discord.ui.button(label="Devenir Modérateur", style=discord.ButtonStyle.primary, custom_id="ticket_mod", emoji="🛡️")
     async def btn_mod(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModalRecrutement("Modérateur", "mod"))
-    @discord.ui.button(label="Postuler Animateur", style=discord.ButtonStyle.success, custom_id="ticket_anim", emoji="🎉")
+    @discord.ui.button(label="Devenir Animateur", style=discord.ButtonStyle.success, custom_id="ticket_anim", emoji="🎉")
     async def btn_anim(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModalRecrutement("Animateur", "anim"))
 
@@ -233,7 +248,8 @@ class ModalSupport(discord.ui.Modal, title="Ouvrir un ticket support"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        categorie = guild.get_channel(ID_CATEGORIE_SUPPORT) if ID_CATEGORIE_SUPPORT else None
+        cat_id = get_config('ID_CATEGORIE_SUPPORT')
+        categorie = guild.get_channel(cat_id) if cat_id else None
 
         pseudo_clean = re.sub(r'[^a-z0-9]', '', interaction.user.display_name.lower()) or str(interaction.user.id)[:6]
         nom_salon = f"ticket-{pseudo_clean}"
@@ -242,17 +258,21 @@ class ModalSupport(discord.ui.Modal, title="Ouvrir un ticket support"):
             return await interaction.followup.send(f"❌ Tu as déjà un ticket support ouvert.", ephemeral=True)
 
         try:
-            ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=get_ticket_overwrites(guild, interaction.user))
+            # ICI LE TICKET EST DE TYPE "support" DONC LA SPICY TEAM Y A ACCÈS
+            ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=get_ticket_overwrites(guild, interaction.user, "support"))
             await interaction.followup.send(f"✅ Ticket créé : {ticket.mention}", ephemeral=True)
+            
             embed = discord.Embed(title=f"🛠️ Ticket Support", description=f"Bonjour {interaction.user.mention},\n\nMerci d'avoir contacté le support. Décris ton problème, la FAQ intelligente pourrait te répondre automatiquement !\n\n**Sujet :** {self.sujet.value}", color=0xf1c40f)
-            mention_staff = f"<@&{ID_ROLE_SPICY_TEAM}>" if ID_ROLE_SPICY_TEAM else ""
-            await ticket.send(f"{interaction.user.mention} {mention_staff}", embed=embed, view=TicketCloseView())
+            
+            role_staff_id = get_config('ID_ROLE_SPICY_TEAM')
+            mention_staff = f"<@&{role_staff_id}>" if role_staff_id else ""
+            
+            await ticket.send(content=f"{interaction.user.mention} {mention_staff}", embed=embed, view=TicketCloseView())
         except Exception as e:
             await interaction.followup.send("❌ Erreur de création.", ephemeral=True)
 
 class GeneralTicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+    def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Ouvrir un ticket", style=discord.ButtonStyle.primary, custom_id="btn_open_general_ticket", emoji="📩")
     async def btn_open(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModalSupport())
@@ -264,8 +284,7 @@ class TicketStaffView(discord.ui.View):
 
     @discord.ui.button(label="Prendre le ticket", style=discord.ButtonStyle.primary, custom_id="btn_claim_ticket_ig", emoji="🙋")
     async def btn_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.manage_messages:
-            return await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
+        if not interaction.user.guild_permissions.manage_messages: return await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
         try:
             conn = get_db_connection()
             with conn.cursor() as cursor:
@@ -275,7 +294,8 @@ class TicketStaffView(discord.ui.View):
                 cursor.execute("SELECT id, status FROM server_events_tickets WHERE discord_message_id = %s", (str(interaction.message.id),))
                 ticket = cursor.fetchone()
                 if not ticket: return await interaction.response.send_message("❌ Ticket introuvable.", ephemeral=True)
-                if ticket['status'] in ['Pris', 'resolu', 'Résolu']: return await interaction.response.send_message("⚠️ Ce ticket est déjà en cours de traitement.", ephemeral=True)
+                if ticket['status'] in ['Pris', 'resolu', 'Résolu']: return await interaction.response.send_message("⚠️ Ce ticket est déjà pris.", ephemeral=True)
+                
                 cursor.execute("UPDATE server_events_tickets SET status = 'Pris', claimed_by = %s, claimed_steamid = %s WHERE id = %s", (staff['pseudo'], staff['steamid'], ticket['id']))
                 conn.commit()
                 embed = interaction.message.embeds[0]
@@ -284,15 +304,13 @@ class TicketStaffView(discord.ui.View):
                 button.disabled = True
                 await interaction.message.edit(embed=embed, view=self)
                 await interaction.response.send_message("✅ Tu as été assigné à ce ticket.", ephemeral=True)
-        except Exception as e:
-            print(f"Erreur prise de ticket: {e}")
-        finally: 
+        except Exception: pass
+        finally:
             if 'conn' in locals() and conn.open: conn.close()
 
     @discord.ui.button(label="Clôturer", style=discord.ButtonStyle.success, custom_id="btn_resolve_ticket_ig", emoji="✅")
     async def btn_resolve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.manage_messages:
-            return await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
+        if not interaction.user.guild_permissions.manage_messages: return await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
         try:
             conn = get_db_connection()
             with conn.cursor() as cursor:
@@ -307,18 +325,15 @@ class TicketStaffView(discord.ui.View):
                 conn.commit()
                 embed = interaction.message.embeds[0]
                 embed.color = 0x2ecc71
-                if len(embed.fields) > 0 and embed.fields[-1].name == "🔄 Statut":
-                    embed.set_field_at(len(embed.fields)-1, name="✅ Statut", value="**Résolu**", inline=False)
+                if len(embed.fields) > 0 and embed.fields[-1].name == "🔄 Statut": embed.set_field_at(len(embed.fields)-1, name="✅ Statut", value="**Résolu**", inline=False)
                 else: embed.add_field(name="✅ Statut", value="**Résolu**", inline=False)
                 for child in self.children:
                     if isinstance(child, discord.ui.Button) and child.style != discord.ButtonStyle.link: child.disabled = True
                 await interaction.message.edit(embed=embed, view=self)
                 await interaction.response.send_message("✅ Incident clos.", ephemeral=True)
-        except Exception as e:
-            print(f"Erreur résolution ticket: {e}")
+        except Exception: pass
         finally:
             if 'conn' in locals() and conn.open: conn.close()
-
 
 class LierCompteModal(discord.ui.Modal, title="Liaison de compte Steam"):
     steamid_input = discord.ui.TextInput(label="Ton SteamID64", placeholder="Ex: 76561198...", min_length=17, max_length=25, required=True)
@@ -334,7 +349,7 @@ class LierCompteModal(discord.ui.Modal, title="Liaison de compte Steam"):
                     cursor.execute("SELECT pseudo FROM player_stats WHERE steamid = %s", (steamid,))
                     user_data = cursor.fetchone()
                     in_game_pseudo = user_data['pseudo'] if user_data else None
-                    guild = interaction.client.get_guild(ID_SERVEUR_DISCORD)
+                    guild = interaction.guild
                     if guild:
                         member = guild.get_member(interaction.user.id)
                         if member:
@@ -365,11 +380,13 @@ class SpicyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
+        init_db() # Initialiser la base de données pour la configuration dynamique
+        
         guild = discord.Object(id=ID_SERVEUR_DISCORD)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
 
-        self.add_view(RecrutementView())
+        self.add_view(RecrutementPersistentView())
         self.add_view(TicketCloseView())
         self.add_view(FAQCloseView())
         self.add_view(LierCompteView())
@@ -394,15 +411,16 @@ async def on_ready():
 async def on_message(message):
     if message.author.bot: return
 
-    if message.channel.category_id == ID_CATEGORIE_SUPPORT and "ticket-" in message.channel.name:
+    cat_support_id = get_config('ID_CATEGORIE_SUPPORT')
+    if cat_support_id and message.channel.category_id == cat_support_id and "ticket-" in message.channel.name:
         content = message.content.lower()
         if "lier" in content and ("compte" in content or "discord" in content or "steam" in content or "comment" in content):
             embed = discord.Embed(title="🤖 FAQ Auto : Lier son compte", description="Pour lier ton compte, va dans le salon prévu à cet effet et clique sur le bouton **Lier mon compte Steam**. Tu devras y entrer ton SteamID64 (qui ressemble à `76561198...`).", color=0x3498db)
-            await message.channel.send(f"{message.author.mention}, cette réponse automatique t'a-t-elle aidé ?", embed=embed, view=FAQCloseView())
+            await message.channel.send(content=f"{message.author.mention}, cette réponse automatique t'a-t-elle aidé ?", embed=embed, view=FAQCloseView())
 
         elif "boutique" in content or "vip" in content or "acheter" in content:
             embed = discord.Embed(title="🤖 FAQ Auto : Boutique & VIP", description=f"Toutes les informations sur les grades et la boutique sont disponibles sur notre site web : **{URL_PANEL_WEB}**", color=0x3498db)
-            await message.channel.send(f"{message.author.mention}, cette réponse automatique t'a-t-elle aidé ?", embed=embed, view=FAQCloseView())
+            await message.channel.send(content=f"{message.author.mention}, cette réponse automatique t'a-t-elle aidé ?", embed=embed, view=FAQCloseView())
 
     await bot.process_commands(message)
 
@@ -430,34 +448,25 @@ async def update_server_status():
                     max_p = data.get('max', 20)
                     players_list = data.get('players_list', [])
 
-                    if status == 'online':
-                        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=f"{players}/{max_p} joueurs sur SCP:SL"))
-                    else:
-                        await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
+                    if status == 'online': await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=f"{players}/{max_p} joueurs sur SCP:SL"))
+                    else: await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
 
-                    if ID_SALON_STATUT:
+                    salon_id = get_config('ID_SALON_STATUT')
+                    if salon_id:
                         guild = bot.get_guild(ID_SERVEUR_DISCORD)
                         if guild:
-                            channel = guild.get_channel(ID_SALON_STATUT)
+                            channel = guild.get_channel(salon_id)
                             if channel:
-                                embed = discord.Embed(
-                                    title="📊 Statut du Serveur SCP:SL",
-                                    description=f"**État :** {'🟢 En ligne' if status == 'online' else '🔴 Hors ligne'}\n**Joueurs :** {players}/{max_p}",
-                                    color=0x2ecc71 if status == 'online' else 0xe74c3c,
-                                    timestamp=discord.utils.utcnow()
-                                )
+                                embed = discord.Embed(title="📊 Statut du Serveur SCP:SL", description=f"**État :** {'🟢 En ligne' if status == 'online' else '🔴 Hors ligne'}\n**Joueurs :** {players}/{max_p}", color=0x2ecc71 if status == 'online' else 0xe74c3c, timestamp=discord.utils.utcnow())
                                 if players_list and status == 'online':
                                     noms = ", ".join(players_list)
                                     embed.add_field(name="En jeu actuellement", value=f"```\n{noms[:1018]}...\n```" if len(noms) > 1024 else f"```\n{noms}\n```", inline=False)
-
                                 embed.set_footer(text="Actualisé en temps réel")
-
                                 last_msg = None
                                 async for msg in channel.history(limit=5):
                                     if msg.author == bot.user:
                                         last_msg = msg
                                         break
-
                                 if last_msg: await last_msg.edit(embed=embed)
                                 else: await channel.send(embed=embed)
     except Exception:
@@ -467,7 +476,10 @@ async def update_server_status():
 async def election_mvp_hebdomadaire():
     guild = bot.get_guild(ID_SERVEUR_DISCORD)
     if not guild: return
-    salon_annonces = guild.get_channel(ID_SALON_ANNONCES)
+    
+    salon_id = get_config('ID_SALON_ANNONCES')
+    salon_annonces = guild.get_channel(salon_id) if salon_id else None
+    
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
@@ -494,10 +506,11 @@ async def election_mvp_hebdomadaire():
 
 @tasks.loop(seconds=15)
 async def check_new_tickets():
-    if not ID_SALON_TICKETS_STAFF: return
+    salon_id = get_config('ID_SALON_TICKETS_STAFF')
+    if not salon_id: return
     guild = bot.get_guild(ID_SERVEUR_DISCORD)
     if not guild: return
-    channel = guild.get_channel(ID_SALON_TICKETS_STAFF)
+    channel = guild.get_channel(salon_id)
     if not channel: return
     try:
         conn = get_db_connection()
@@ -508,7 +521,8 @@ async def check_new_tickets():
                 embed = discord.Embed(title=f"🚨 Nouveau Signalement IG", description=f"**Signalé par:** `{ticket['reporter_pseudo']}`\n**Cible:** `{ticket['player_pseudo']}`", color=0xe74c3c)
                 embed.add_field(name="Type", value=f"**{ticket['type_report']}**", inline=True)
                 embed.add_field(name="Raison", value=f"_{ticket['reason']}_", inline=False)
-                mention_staff = f"<@&{ID_ROLE_SPICY_TEAM}>" if ID_ROLE_SPICY_TEAM else ""
+                role_spicy_id = get_config('ID_ROLE_SPICY_TEAM')
+                mention_staff = f"<@&{role_spicy_id}>" if role_spicy_id else ""
                 msg = await channel.send(content=f"Nouveau ticket en jeu ! {mention_staff}", embed=embed, view=TicketStaffView())
                 cursor.execute("UPDATE server_events_tickets SET discord_message_id = %s WHERE id = %s", (str(msg.id), ticket['id']))
                 conn.commit()
@@ -518,10 +532,11 @@ async def check_new_tickets():
 
 @tasks.loop(minutes=10)
 async def update_live_leaderboard():
-    if not ID_SALON_CLASSEMENT: return
+    salon_id = get_config('ID_SALON_CLASSEMENT')
+    if not salon_id: return
     guild = bot.get_guild(ID_SERVEUR_DISCORD)
     if not guild: return
-    channel = guild.get_channel(ID_SALON_CLASSEMENT)
+    channel = guild.get_channel(salon_id)
     if not channel: return
     try:
         conn = get_db_connection()
@@ -576,13 +591,41 @@ async def check_levels_and_roles():
 @tasks.loop(minutes=1)
 async def check_new_events(): pass
 
+# ==========================================
+# COMMANDES SLASH (/) DE CONFIGURATION DYNAMIQUE
+# ==========================================
+
+@bot.tree.command(name="config_salon", description="[ADMIN] Définir dynamiquement un salon/catégorie")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(type_salon=[
+    app_commands.Choice(name="Catégorie Support", value="ID_CATEGORIE_SUPPORT"),
+    app_commands.Choice(name="Catégorie Candidatures", value="ID_CATEGORIE_TICKETS"),
+    app_commands.Choice(name="Salon Annonces MVP", value="ID_SALON_ANNONCES"),
+    app_commands.Choice(name="Salon Classement", value="ID_SALON_CLASSEMENT"),
+    app_commands.Choice(name="Salon Alerte Reports IG", value="ID_SALON_TICKETS_STAFF"),
+    app_commands.Choice(name="Salon Statut", value="ID_SALON_STATUT"),
+    app_commands.Choice(name="Salon Logs Transcripts", value="ID_SALON_TRANSCRIPTS"),
+])
+async def config_salon(interaction: discord.Interaction, type_salon: app_commands.Choice[str], salon: discord.abc.GuildChannel):
+    set_config(type_salon.value, salon.id)
+    await interaction.response.send_message(f"✅ Configuration sauvegardée : **{type_salon.name}** est maintenant associé à {salon.mention}", ephemeral=True)
+
+@bot.tree.command(name="config_role", description="[ADMIN] Définir dynamiquement un rôle staff")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(type_role=[
+    app_commands.Choice(name="Rôle Spicy Team (Staff Global)", value="ID_ROLE_SPICY_TEAM"),
+    app_commands.Choice(name="Rôle Manager (Perms Max)", value="ID_ROLE_MANAGER"),
+])
+async def config_role(interaction: discord.Interaction, type_role: app_commands.Choice[str], role: discord.Role):
+    set_config(type_role.value, role.id)
+    await interaction.response.send_message(f"✅ Configuration sauvegardée : **{type_role.name}** est maintenant associé à {role.mention}", ephemeral=True)
+
 
 # ==========================================
-# COMMANDES SLASH (/) : TICKETS GROUP
+# COMMANDES SLASH (/) DE GESTION STAFF & TICKETS
 # ==========================================
 
-class TicketGroup(app_commands.Group):
-    pass
+class TicketGroup(app_commands.Group): pass
 ticket_cmd_group = TicketGroup(name="ticket", description="Gérer les tickets")
 bot.tree.add_command(ticket_cmd_group)
 
@@ -602,10 +645,99 @@ async def ticket_remove(interaction: discord.Interaction, membre: discord.Member
     await interaction.channel.set_permissions(membre, overwrite=None)
     await interaction.response.send_message(f"✅ {membre.mention} a été retiré du ticket.")
 
+@bot.tree.command(name="recrutement", description="[STAFF] Lancer une campagne de recrutement")
+@app_commands.default_permissions(manage_guild=True)
+async def recrutement_cmd(interaction: discord.Interaction, places_moderateur: int, places_animateur: int):
+    if places_moderateur <= 0 and places_animateur <= 0:
+        return await interaction.response.send_message("❌ Il faut au moins une place ouverte dans l'un des postes.", ephemeral=True)
+
+    embed = discord.Embed(
+        title="📢 CAMPAGNE DE RECRUTEMENT OUVERTE",
+        description="L'équipe de Spicy Anomaly s'agrandit ! Nous recherchons de nouveaux membres motivés pour rejoindre le Staff.\n\n**Postes actuellement à pourvoir :**",
+        color=0xe63946
+    )
+    if places_moderateur > 0:
+        embed.add_field(name="🛡️ Modérateur", value=f"Places disponibles : **{places_moderateur}**", inline=False)
+    if places_animateur > 0:
+        embed.add_field(name="🎉 Animateur", value=f"Places disponibles : **{places_animateur}**", inline=False)
+    
+    embed.set_footer(text="Cliquez sur les boutons ci-dessous pour postuler (soyez détaillés !)")
+
+    # Création d'une vue temporaire pour l'affichage (les boutons déclencheront la vue persistante)
+    view = discord.ui.View(timeout=None)
+    if places_moderateur > 0:
+        view.add_item(discord.ui.Button(label="Devenir Modérateur", style=discord.ButtonStyle.primary, custom_id="ticket_mod", emoji="🛡️"))
+    if places_animateur > 0:
+        view.add_item(discord.ui.Button(label="Devenir Animateur", style=discord.ButtonStyle.success, custom_id="ticket_anim", emoji="🎉"))
+
+    await interaction.channel.send(content="@everyone", embed=embed, view=view)
+    await interaction.response.send_message("✅ Campagne de recrutement envoyée.", ephemeral=True)
+
+@bot.tree.command(name="warn", description="[STAFF] Avertir un joueur (Enregistré en BDD)")
+@app_commands.default_permissions(manage_messages=True)
+async def warn_user(interaction: discord.Interaction, membre: discord.Member, raison: str):
+    # Sécurité anti "Staff warn un Staff"
+    role_spicy_id = get_config('ID_ROLE_SPICY_TEAM')
+    if role_spicy_id:
+        role_spicy = interaction.guild.get_role(role_spicy_id)
+        if role_spicy in membre.roles:
+            if not interaction.user.guild_permissions.manage_guild:
+                return await interaction.response.send_message("❌ Action refusée. Tu ne peux pas avertir un membre de l'équipe, contacte la direction.", ephemeral=True)
+
+    target_id = str(membre.id)
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT steamid FROM player_stats WHERE discord_id = %s", (target_id,))
+            cible = cursor.fetchone()
+            if cible:
+                cursor.execute("INSERT INTO player_infractions (steamid, type_sanction, reason, staff_pseudo) VALUES (%s, %s, %s, %s)", (cible['steamid'], 'Warn', raison, interaction.user.display_name))
+                cursor.execute("UPDATE player_stats SET warnings = warnings + 1 WHERE steamid = %s", (cible['steamid'],))
+                conn.commit()
+            
+            embed = discord.Embed(title="⚠️ Nouvel Avertissement", color=0xe67e22)
+            embed.add_field(name="Membre", value=membre.mention, inline=True)
+            embed.add_field(name="Staff", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Raison", value=raison, inline=False)
+            if not cible: embed.set_footer(text="Attention: Le joueur n'est pas lié à un compte Steam. Le warn n'apparaîtra pas sur le site web.")
+            
+            await interaction.response.send_message(embed=embed)
+
+            try:
+                dm_embed = discord.Embed(title="⚠️ Tu as reçu un avertissement", description=f"**Raison :** {raison}\n\nMerci de respecter le règlement de Spicy Anomaly.", color=0xe74c3c)
+                await membre.send(embed=dm_embed)
+            except discord.Forbidden:
+                await interaction.followup.send("*(Le joueur a ses messages privés désactivés, il n'a pas été notifié par message privé)*", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Erreur BDD : {e}", ephemeral=True)
+    finally:
+        if 'conn' in locals() and conn.open: conn.close()
+
 
 # ==========================================
-# COMMANDES SLASH (/) : UTILISATEURS
+# COMMANDES SLASH (/) : JOUEURS
 # ==========================================
+
+@bot.tree.command(name="delier", description="Retirer la liaison entre ton compte Discord et Steam")
+async def delier_cmd(interaction: discord.Interaction):
+    discord_id = str(interaction.user.id)
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            affected = cursor.execute("UPDATE player_stats SET discord_id = NULL WHERE discord_id = %s", (discord_id,))
+            if affected > 0:
+                conn.commit()
+                role_lie = discord.utils.get(interaction.guild.roles, name=NOM_ROLE_LIE)
+                if role_lie and role_lie in interaction.user.roles:
+                    try: await interaction.user.remove_roles(role_lie)
+                    except: pass
+                await interaction.response.send_message("✅ Ton compte a bien été délié avec succès.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Ton compte n'était pas lié.", ephemeral=True)
+    except Exception:
+        await interaction.response.send_message("❌ Erreur base de données.", ephemeral=True)
+    finally:
+        if 'conn' in locals() and conn.open: conn.close()
 
 @bot.tree.command(name="stats", description="Affiche tes statistiques")
 async def voir_stats(interaction: discord.Interaction):
@@ -624,7 +756,7 @@ async def voir_stats(interaction: discord.Interaction):
                 embed.add_field(name="Ratio K/D", value=f"📈 {kd}", inline=True)
                 await interaction.response.send_message(embed=embed)
             else:
-                await interaction.response.send_message("❌ Compte non lié.", ephemeral=True)
+                await interaction.response.send_message("❌ Ton compte n'est pas lié.", ephemeral=True)
     finally:
         if 'conn' in locals() and conn.open: conn.close()
 
@@ -668,82 +800,6 @@ async def voir_casier(interaction: discord.Interaction):
             await interaction.response.send_message(embed=embed, ephemeral=True)
     finally:
         if 'conn' in locals() and conn.open: conn.close()
-
-# ==========================================
-# COMMANDES SLASH (/) : STAFF
-# ==========================================
-
-@bot.tree.command(name="patchnote", description="[STAFF] Publier une mise à jour formatée automatiquement")
-@app_commands.default_permissions(manage_guild=True)
-async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextChannel, version: str, notes_brutes: str):
-    """ Utilise + (ajout), - (retrait/bug), ~ (modif) en séparant par des virgules """
-    ajouts, retraits, modifs = [], [], []
-    lignes = notes_brutes.replace(',', '\n').split('\n')
-
-    for ligne in lignes:
-        ligne = ligne.strip()
-        if ligne.startswith('+'): ajouts.append(f"✅ {ligne[1:].strip()}")
-        elif ligne.startswith('-'): retraits.append(f"❌ {ligne[1:].strip()}")
-        elif ligne.startswith('~'): modifs.append(f"🔄 {ligne[1:].strip()}")
-        elif ligne: modifs.append(f"🔹 {ligne}")
-
-    embed = discord.Embed(
-        title=f"🚀 Mise à jour Spicy Anomaly | Version {version}",
-        description="Le serveur vient d'être mis à jour ! Voici les changements :",
-        color=0x2ecc71,
-        timestamp=discord.utils.utcnow()
-    )
-
-    if ajouts: embed.add_field(name="🟢 Nouveautés", value="\n".join(ajouts), inline=False)
-    if modifs: embed.add_field(name="🟡 Changements & Équilibrage", value="\n".join(modifs), inline=False)
-    if retraits: embed.add_field(name="🔴 Corrections & Retraits", value="\n".join(retraits), inline=False)
-    embed.set_footer(text=f"Publié par {interaction.user.display_name}")
-
-    await salon.send(embed=embed)
-    await interaction.response.send_message(f"✅ Patch note publié avec succès dans {salon.mention}", ephemeral=True)
-
-@bot.tree.command(name="warn", description="[STAFF] Avertir un joueur (Enregistré en BDD)")
-@app_commands.default_permissions(manage_messages=True)
-async def warn_user(interaction: discord.Interaction, membre: discord.Member, raison: str):
-    staff_id = str(interaction.user.id)
-    target_id = str(membre.id)
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT steamid FROM player_stats WHERE discord_id = %s", (target_id,))
-            cible = cursor.fetchone()
-            steamid_cible = cible['steamid'] if cible else "Non Lié"
-
-            embed = discord.Embed(title="⚠️ Nouvel Avertissement", color=0xe67e22)
-            embed.add_field(name="Membre", value=membre.mention, inline=True)
-            embed.add_field(name="Staff", value=interaction.user.mention, inline=True)
-            embed.add_field(name="Raison", value=raison, inline=False)
-            await interaction.response.send_message(embed=embed)
-
-            try:
-                dm_embed = discord.Embed(title="⚠️ Tu as reçu un avertissement", description=f"**Raison :** {raison}\n\nMerci de respecter le règlement du serveur Spicy Anomaly.", color=0xe74c3c)
-                await membre.send(embed=dm_embed)
-            except discord.Forbidden:
-                await interaction.followup.send("*(Le joueur a ses messages privés désactivés, il n'a pas reçu la notification)*", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Erreur BDD : {e}", ephemeral=True)
-    finally:
-        if 'conn' in locals() and conn.open: conn.close()
-
-@bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
-@app_commands.default_permissions(manage_guild=True)
-async def ticket_setup(interaction: discord.Interaction, salon: discord.TextChannel):
-    embed = discord.Embed(title="Besoin d'aide ?", description="Clique ci-dessous pour ouvrir un ticket de support.", color=0x3498db)
-    await salon.send(embed=embed, view=GeneralTicketView())
-    await interaction.response.send_message(f"✅ Panel créé.", ephemeral=True)
-
-@bot.tree.command(name="setup_liaison", description="[STAFF] Créer le bouton de liaison")
-@app_commands.default_permissions(manage_guild=True)
-async def setup_liaison_cmd(interaction: discord.Interaction, salon: discord.TextChannel):
-    embed = discord.Embed(title="🔗 Liaison de compte", description="Associe ton Discord à ton SteamID.", color=0xe63946)
-    await salon.send(embed=embed, view=LierCompteView())
-    await interaction.response.send_message(f"✅ Panneau généré.", ephemeral=True)
-
 
 # ==========================================
 # GESTION WEB (FLASK)
