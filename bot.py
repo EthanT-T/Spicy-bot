@@ -174,9 +174,11 @@ async def process_ticket_closure(channel, closed_by, reason):
     if model_ia and len(messages) > 2:
         try:
             prompt_resume = f"Voici la transcription d'un ticket de support Discord. Résume ce qu'il s'est passé en 2 ou 3 phrases courtes pour les administrateurs. \n\nTranscription :\n{transcript_raw[-5000:]}"
-            response = await model_ia.generate_content_async(prompt_resume)
+            # Utilisation de asyncio.to_thread pour ne pas bloquer le bot
+            response = await asyncio.to_thread(model_ia.generate_content, prompt_resume)
             resume_ia = response.text.strip()
-        except Exception: pass
+        except Exception as e:
+            print(f"Erreur IA Résumé : {e}")
 
     if ticket_owner:
         try:
@@ -439,9 +441,11 @@ async def on_message(message):
                 async with message.channel.typing():
                     try:
                         prompt_staff = f"Un membre du staff (Spicy Team) te demande : '{message.content}'. Agis comme un instructeur. Réponds-lui en lui expliquant la procédure avec précision en te basant sur le point 10 de tes instructions (Panel web, commandes Discord, etc)."
-                        response = await model_parler.generate_content_async(prompt_staff)
+                        # Utilisation de asyncio.to_thread pour ne pas bloquer le bot
+                        response = await asyncio.to_thread(model_parler.generate_content, prompt_staff)
                         await message.reply(response.text.strip())
-                    except Exception as e: print(f"Erreur IA Staff: {e}")
+                    except Exception as e: 
+                        print(f"Erreur IA Staff: {e}")
             return # On bloque la suite pour ne pas traiter d'autres commandes
 
     # 2. FAQ Intelligente Joueurs (Si le message est dans un ticket support)
@@ -457,10 +461,12 @@ async def on_message(message):
                     Sinon, donne un conseil poli et précise qu'un Staff arrive.
                     Message du joueur : {message.content}
                     """
-                    response = await model_ia.generate_content_async(system_prompt)
+                    # Utilisation de asyncio.to_thread
+                    response = await asyncio.to_thread(model_ia.generate_content, system_prompt)
                     embed = discord.Embed(title="🤖 Assistant Spicy Anomaly", description=response.text.strip(), color=0x3498db)
                     await message.channel.send(content=f"{message.author.mention}, cette réponse t'a-t-elle aidé ?", embed=embed, view=FAQCloseView())
-                except Exception as e: print(f"Erreur IA (FAQ): {e}")
+                except Exception as e: 
+                    print(f"Erreur IA (FAQ): {e}")
 
     await bot.process_commands(message)
 
@@ -783,7 +789,8 @@ async def parler_ia(interaction: discord.Interaction, question: str):
     await interaction.response.defer() 
     
     try:
-        reponse = await model_parler.generate_content_async(question)
+        # Utilisation de asyncio.to_thread pour ne pas bloquer le bot
+        reponse = await asyncio.to_thread(model_parler.generate_content, question)
         embed = discord.Embed(color=0x3498db)
         embed.add_field(name=f"🗣️ Question de {interaction.user.display_name}", value=question, inline=False)
         embed.add_field(name="🤖 Réponse de l'IA", value=reponse.text.strip(), inline=False)
@@ -792,7 +799,7 @@ async def parler_ia(interaction: discord.Interaction, question: str):
         await interaction.followup.send(embed=embed)
     except Exception as e:
         print(f"Erreur commande /parler : {e}")
-        await interaction.followup.send("❌ Mon cerveau a surchauffé. Réessaie plus tard !", ephemeral=True)
+        await interaction.followup.send(f"❌ Erreur technique détaillée : `{e}`", ephemeral=True)
 
 @bot.tree.command(name="quetes", description="Affiche tes missions quotidiennes pour gagner de l'XP !")
 async def voir_quetes(interaction: discord.Interaction):
