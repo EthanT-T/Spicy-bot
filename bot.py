@@ -5,7 +5,7 @@ import pymysql
 import os
 from flask import Flask
 from threading import Thread
-from datetime import datetime
+from datetime import datetime, time
 import aiohttp
 import re
 import asyncio
@@ -111,9 +111,6 @@ async def get_or_create_role(guild, role_name, color=discord.Color.default()):
     return role
 
 def get_ticket_overwrites(guild, user, type_ticket="support"):
-    """
-    Définit les permissions du ticket selon qu'il soit support ou recrutement.
-    """
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
         user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
@@ -123,11 +120,8 @@ def get_ticket_overwrites(guild, user, type_ticket="support"):
     role_spicy = guild.get_role(get_config('ID_ROLE_SPICY_TEAM'))
     role_manager = guild.get_role(get_config('ID_ROLE_MANAGER'))
     
-    # Les Managers voient toujours tout
     if role_manager: 
         overwrites[role_manager] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
-        
-    # Le reste du Staff (Spicy Team) ne voit que les tickets support classiques, PAS les recrutements
     if role_spicy and type_ticket == "support": 
         overwrites[role_spicy] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
         
@@ -180,7 +174,6 @@ class TicketCloseView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Fermer le ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket", emoji="🔒")
     async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Vérifie si l'user a le droit de fermer (Manage Channels OU Rôle Spicy OU Rôle Manager)
         has_perm = interaction.user.guild_permissions.manage_channels
         if get_config('ID_ROLE_SPICY_TEAM') and discord.utils.get(interaction.user.roles, id=get_config('ID_ROLE_SPICY_TEAM')): has_perm = True
         if get_config('ID_ROLE_MANAGER') and discord.utils.get(interaction.user.roles, id=get_config('ID_ROLE_MANAGER')): has_perm = True
@@ -218,13 +211,11 @@ class ModalRecrutement(discord.ui.Modal):
             return await interaction.followup.send(f"❌ Tu as déjà une candidature en cours.", ephemeral=True)
 
         try:
-            # ICI ON PRECISE BIEN LE TYPE "recrutement" POUR CACHER LE TICKET A LA SPICY TEAM
             ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=get_ticket_overwrites(guild, interaction.user, "recrutement"))
             await interaction.followup.send(f"✅ Ticket créé : {ticket.mention}", ephemeral=True)
             
             embed = discord.Embed(title=f"🎫 Candidature : {self.role_nom}", description=f"Bienvenue {interaction.user.mention} !\n\n**Motivations :**\n```\n{self.motivations.value}\n```", color=0x3498db)
             
-            # Le ping fantôme pour la Spicy Team (si configuré)
             role_staff_id = get_config('ID_ROLE_SPICY_TEAM')
             mention_staff = f"<@&{role_staff_id}>" if role_staff_id else ""
             
@@ -233,7 +224,6 @@ class ModalRecrutement(discord.ui.Modal):
             await interaction.followup.send("❌ Erreur de création du ticket.", ephemeral=True)
 
 class RecrutementPersistentView(discord.ui.View):
-    """Cette vue tourne en permanence pour capter les clics sur l'embed de recrutement."""
     def __init__(self):
         super().__init__(timeout=None)
     @discord.ui.button(label="Devenir Modérateur", style=discord.ButtonStyle.primary, custom_id="ticket_mod", emoji="🛡️")
@@ -258,7 +248,6 @@ class ModalSupport(discord.ui.Modal, title="Ouvrir un ticket support"):
             return await interaction.followup.send(f"❌ Tu as déjà un ticket support ouvert.", ephemeral=True)
 
         try:
-            # ICI LE TICKET EST DE TYPE "support" DONC LA SPICY TEAM Y A ACCÈS
             ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=get_ticket_overwrites(guild, interaction.user, "support"))
             await interaction.followup.send(f"✅ Ticket créé : {ticket.mention}", ephemeral=True)
             
@@ -380,7 +369,7 @@ class SpicyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        init_db() # Initialiser la base de données pour la configuration dynamique
+        init_db() 
         
         guild = discord.Object(id=ID_SERVEUR_DISCORD)
         self.tree.copy_global_to(guild=guild)
@@ -472,8 +461,14 @@ async def update_server_status():
     except Exception:
         await bot.change_presence(activity=discord.Game(name="🔴 Serveur Hors Ligne"))
 
-@tasks.loop(hours=168)
+
+# Élection programmée du MVP, le dimanche à 20h00 (UTC)
+@tasks.loop(time=time(hour=20, minute=0))
 async def election_mvp_hebdomadaire():
+    now = datetime.now()
+    if now.weekday() != 6:  # 0=Lundi, 6=Dimanche. On annule si on n'est pas dimanche.
+        return 
+        
     guild = bot.get_guild(ID_SERVEUR_DISCORD)
     if not guild: return
     
@@ -483,24 +478,34 @@ async def election_mvp_hebdomadaire():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT steamid, discord_id, pseudo, xp, level FROM player_stats WHERE discord_id IS NOT NULL ORDER BY xp DESC LIMIT 1")
+            # 1. Sélectionner le joueur avec le plus de weekly_xp
+            cursor.execute("SELECT steamid, discord_id, pseudo, weekly_xp, level FROM player_stats WHERE discord_id IS NOT NULL ORDER BY weekly_xp DESC LIMIT 1")
             mvp = cursor.fetchone()
-            if not mvp: return
-            cursor.execute("UPDATE player_stats SET custom_badge = '🏆' WHERE steamid = %s", (mvp['steamid'],))
-            cursor.execute("UPDATE player_stats SET custom_badge = NULL WHERE steamid != %s AND custom_badge = '🏆'", (mvp['steamid'],))
+            
+            if mvp and mvp['weekly_xp'] > 0:
+                # 2. Assigner la coupe en base de données
+                cursor.execute("UPDATE player_stats SET custom_badge = '🏆' WHERE steamid = %s", (mvp['steamid'],))
+                cursor.execute("UPDATE player_stats SET custom_badge = NULL WHERE steamid != %s AND custom_badge = '🏆'", (mvp['steamid'],))
+
+                # 3. Mettre à jour les rôles Discord
+                role_mvp = await get_or_create_role(guild, "🌟 MVP de la Semaine", discord.Color.gold())
+                for member in guild.members:
+                    if role_mvp in member.roles and member.id != int(mvp['discord_id']): 
+                        await member.remove_roles(role_mvp)
+
+                nouveau_mvp_member = guild.get_member(int(mvp['discord_id']))
+                if nouveau_mvp_member:
+                    await nouveau_mvp_member.add_roles(role_mvp)
+                    if salon_annonces:
+                        embed = discord.Embed(title="🌟 MVP DE LA SEMAINE 🌟", description=f"Félicitations à **{mvp['pseudo']}** qui devient le MVP avec **{mvp['weekly_xp']} XP** farmés cette semaine !", color=discord.Color.gold())
+                        await salon_annonces.send(content=f"🎉 {nouveau_mvp_member.mention}", embed=embed)
+            
+            # 4. RESET L'XP HEBDOMADAIRE POUR TOUS
+            cursor.execute("UPDATE player_stats SET weekly_xp = 0")
             conn.commit()
 
-        role_mvp = await get_or_create_role(guild, "🌟 MVP de la Semaine", discord.Color.gold())
-        for member in guild.members:
-            if role_mvp in member.roles and member.id != int(mvp['discord_id']): await member.remove_roles(role_mvp)
-
-        nouveau_mvp_member = guild.get_member(int(mvp['discord_id']))
-        if nouveau_mvp_member:
-            await nouveau_mvp_member.add_roles(role_mvp)
-            if salon_annonces:
-                embed = discord.Embed(title="🌟 MVP DE LA SEMAINE", description=f"Félicitations à **{mvp['pseudo']}** qui remporte le titre de MVP cette semaine !", color=discord.Color.gold())
-                await salon_annonces.send(content=f"🎉 {nouveau_mvp_member.mention}", embed=embed)
-    except Exception: pass
+    except Exception as e: 
+        print(f"Erreur Election MVP: {e}")
     finally:
         if 'conn' in locals() and conn.open: conn.close()
 
@@ -663,7 +668,6 @@ async def recrutement_cmd(interaction: discord.Interaction, places_moderateur: i
     
     embed.set_footer(text="Cliquez sur les boutons ci-dessous pour postuler (soyez détaillés !)")
 
-    # Création d'une vue temporaire pour l'affichage (les boutons déclencheront la vue persistante)
     view = discord.ui.View(timeout=None)
     if places_moderateur > 0:
         view.add_item(discord.ui.Button(label="Devenir Modérateur", style=discord.ButtonStyle.primary, custom_id="ticket_mod", emoji="🛡️"))
@@ -676,13 +680,15 @@ async def recrutement_cmd(interaction: discord.Interaction, places_moderateur: i
 @bot.tree.command(name="warn", description="[STAFF] Avertir un joueur (Enregistré en BDD)")
 @app_commands.default_permissions(manage_messages=True)
 async def warn_user(interaction: discord.Interaction, membre: discord.Member, raison: str):
-    # Sécurité anti "Staff warn un Staff"
+    
+    # SÉCURITÉ ANTI-WARN ENTRE STAFFS
     role_spicy_id = get_config('ID_ROLE_SPICY_TEAM')
     if role_spicy_id:
         role_spicy = interaction.guild.get_role(role_spicy_id)
-        if role_spicy in membre.roles:
+        if role_spicy and role_spicy in membre.roles:
+            # Seuls ceux qui ont la permission Administrateur peuvent warn le staff
             if not interaction.user.guild_permissions.manage_guild:
-                return await interaction.response.send_message("❌ Action refusée. Tu ne peux pas avertir un membre de l'équipe, contacte la direction.", ephemeral=True)
+                return await interaction.response.send_message("❌ Action refusée. Tu ne peux pas avertir un membre de l'équipe.", ephemeral=True)
 
     target_id = str(membre.id)
     try:
@@ -811,3 +817,4 @@ def run_flask(): app.run(host='0.0.0.0', port=8080)
 Thread(target=run_flask).start()
 
 bot.run(TOKEN)
+
