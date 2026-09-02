@@ -656,19 +656,25 @@ async def parler_ia(interaction: discord.Interaction, question: str):
     try:
         reponse = await asyncio.to_thread(model_parler.generate_content, question)
         
-        # On coupe la question si elle est trop longue pour éviter de faire planter Discord
+        # On coupe la question si elle est trop longue pour Discord
         question_safe = question[:1020] + "..." if len(question) > 1024 else question
         
-        # On met la réponse dans la 'description' (limite de 4096 caractères au lieu de 1024)
         texte_ia = reponse.text.strip()
         if len(texte_ia) > 4000:
-            texte_ia = texte_ia[:4000] + "..." # Sécurité anti-crash
+            texte_ia = texte_ia[:4000] + "..."
             
         embed = discord.Embed(title="🤖 Assistant IA", description=texte_ia, color=0x3498db)
         embed.add_field(name="🗣️ Ta question", value=question_safe, inline=False)
         
         await interaction.followup.send(embed=embed)
-    except Exception as e: await interaction.followup.send(f"❌ Erreur: {e}", ephemeral=True)@bot.tree.command(name="quetes", description="Affiche tes missions quotidiennes pour gagner de l'XP !")
+    except Exception as e: 
+        erreur = str(e)
+        # Si c'est une erreur de quota (429), on met un message propre
+        if "429" in erreur or "quota" in erreur.lower():
+            await interaction.followup.send("⏳ **L'IA est un peu surchargée (limite de requêtes atteinte). Attends une petite minute avant de relancer !**", ephemeral=True)
+        else:
+            # Sinon on affiche l'erreur normale
+            await interaction.followup.send(f"❌ Erreur technique: {erreur}", ephemeral=True)
 async def voir_quetes(interaction: discord.Interaction):
     try:
         conn = get_db_connection()
