@@ -52,8 +52,8 @@ Si on te pose une question sur un joueur précis, dis d'ouvrir un ticket ou d'al
 
 if IA_TOKEN:
     genai.configure(api_key=IA_TOKEN)
-    model_ia = genai.GenerativeModel('gemini-3.6-flash')
-    model_parler = genai.GenerativeModel('gemini-3.6-flash', system_instruction=BIBLE_DU_SERVEUR)
+    model_ia = genai.GenerativeModel('gemini-2.5-flash')
+    model_parler = genai.GenerativeModel('gemini-2.5-flash', system_instruction=BIBLE_DU_SERVEUR)
 
 # DB Config (Synchrone)
 DB_HOST = os.environ.get('DB_HOST', 'mysql-spicy-anomaly.alwaysdata.net')
@@ -155,8 +155,14 @@ def get_ticket_overwrites(guild, user, type_ticket="support"):
     role_spicy = guild.get_role(get_config('ID_ROLE_SPICY_TEAM'))
     role_manager = guild.get_role(get_config('ID_ROLE_MANAGER'))
     
-    if role_manager: overwrites[role_manager] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
-    if role_spicy and type_ticket == "support": overwrites[role_spicy] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+    # Correction : Pour les candidatures, on cache à la Spicy Team, seuls les Managers ont accès
+    if type_ticket == "recrutement":
+        if role_spicy: overwrites[role_spicy] = discord.PermissionOverwrite(read_messages=False)
+        if role_manager: overwrites[role_manager] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+    elif type_ticket == "support":
+        if role_spicy: overwrites[role_spicy] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        if role_manager: overwrites[role_manager] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        
     return overwrites
 
 async def process_ticket_closure(channel, closed_by, reason):
@@ -174,7 +180,6 @@ async def process_ticket_closure(channel, closed_by, reason):
     if model_ia and len(messages) > 2:
         try:
             prompt_resume = f"Voici la transcription d'un ticket de support Discord. Résume ce qu'il s'est passé en 2 ou 3 phrases courtes pour les administrateurs. \n\nTranscription :\n{transcript_raw[-5000:]}"
-            # Utilisation de asyncio.to_thread pour ne pas bloquer le bot
             response = await asyncio.to_thread(model_ia.generate_content, prompt_resume)
             resume_ia = response.text.strip()
         except Exception as e:
@@ -253,9 +258,9 @@ class ModalRecrutement(discord.ui.Modal):
             ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=get_ticket_overwrites(guild, interaction.user, "recrutement"))
             await interaction.followup.send(f"✅ Ticket créé : {ticket.mention}", ephemeral=True)
             embed = discord.Embed(title=f"🎫 Candidature : {self.role_nom}", description=f"Bienvenue {interaction.user.mention} !\n\n**Motivations :**\n```\n{self.motivations.value}\n```", color=0x3498db)
-            role_staff_id = get_config('ID_ROLE_SPICY_TEAM')
-            mention_staff = f"<@&{role_staff_id}>" if role_staff_id else ""
-            await ticket.send(content=f"{interaction.user.mention} | {mention_staff}", embed=embed, view=TicketCloseView())
+            role_manager_id = get_config('ID_ROLE_MANAGER')
+            mention_manager = f"<@&{role_manager_id}>" if role_manager_id else ""
+            await ticket.send(content=f"{interaction.user.mention} | {mention_manager}", embed=embed, view=TicketCloseView())
         except Exception as e:
             await interaction.followup.send("❌ Erreur de création du ticket.", ephemeral=True)
 
@@ -441,12 +446,11 @@ async def on_message(message):
                 async with message.channel.typing():
                     try:
                         prompt_staff = f"Un membre du staff (Spicy Team) te demande : '{message.content}'. Agis comme un instructeur. Réponds-lui en lui expliquant la procédure avec précision en te basant sur le point 10 de tes instructions (Panel web, commandes Discord, etc)."
-                        # Utilisation de asyncio.to_thread pour ne pas bloquer le bot
                         response = await asyncio.to_thread(model_parler.generate_content, prompt_staff)
                         await message.reply(response.text.strip())
                     except Exception as e: 
                         print(f"Erreur IA Staff: {e}")
-            return # On bloque la suite pour ne pas traiter d'autres commandes
+            return 
 
     # 2. FAQ Intelligente Joueurs (Si le message est dans un ticket support)
     cat_support_id = get_config('ID_CATEGORIE_SUPPORT')
@@ -461,7 +465,6 @@ async def on_message(message):
                     Sinon, donne un conseil poli et précise qu'un Staff arrive.
                     Message du joueur : {message.content}
                     """
-                    # Utilisation de asyncio.to_thread
                     response = await asyncio.to_thread(model_ia.generate_content, system_prompt)
                     embed = discord.Embed(title="🤖 Assistant Spicy Anomaly", description=response.text.strip(), color=0x3498db)
                     await message.channel.send(content=f"{message.author.mention}, cette réponse t'a-t-elle aidé ?", embed=embed, view=FAQCloseView())
@@ -745,7 +748,8 @@ async def warn_user(interaction: discord.Interaction, membre: discord.Member, ra
 
 @bot.tree.command(name="patchnote", description="[STAFF] Publier une mise à jour formatée")
 @app_commands.default_permissions(manage_guild=True)
-async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextChannel, version: str, notes_brutes: str):
+@app_commands.describe(role_a_ping="Le rôle à mentionner (Optionnel)")
+async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextChannel, version: str, notes_brutes: str, role_a_ping: discord.Role = None):
     ajouts, retraits, modifs = [], [], []
     for ligne in notes_brutes.replace(',', '\n').split('\n'):
         ligne = ligne.strip()
@@ -760,7 +764,8 @@ async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextCha
     if retraits: embed.add_field(name="🔴 Corrections & Retraits", value="\n".join(retraits), inline=False)
     embed.set_footer(text=f"Publié par {interaction.user.display_name}")
 
-    await salon.send(embed=embed)
+    mention = role_a_ping.mention if role_a_ping else ""
+    await salon.send(content=mention, embed=embed)
     await interaction.response.send_message(f"✅ Patch note publié dans {salon.mention}", ephemeral=True)
 
 @bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
@@ -789,7 +794,6 @@ async def parler_ia(interaction: discord.Interaction, question: str):
     await interaction.response.defer() 
     
     try:
-        # Utilisation de asyncio.to_thread pour ne pas bloquer le bot
         reponse = await asyncio.to_thread(model_parler.generate_content, question)
         embed = discord.Embed(color=0x3498db)
         embed.add_field(name=f"🗣️ Question de {interaction.user.display_name}", value=question, inline=False)
