@@ -76,8 +76,8 @@ model_ia = None
 model_parler = None
 if IA_TOKEN:
     genai.configure(api_key=IA_TOKEN)
-    model_ia = genai.GenerativeModel('gemini-2.5-flash')
-    model_parler = genai.GenerativeModel('gemini-2.5-flash', system_instruction=BIBLE_DU_SERVEUR)
+    model_ia = genai.GenerativeModel('gemini-3.6-flash')
+    model_parler = genai.GenerativeModel('gemini-3.6-flash', system_instruction=BIBLE_DU_SERVEUR)
 
 intents = discord.Intents.default()
 intents.members = True
