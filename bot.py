@@ -655,12 +655,20 @@ async def parler_ia(interaction: discord.Interaction, question: str):
     await interaction.response.defer() 
     try:
         reponse = await asyncio.to_thread(model_parler.generate_content, question)
-        embed = discord.Embed(color=0x3498db)
-        embed.add_field(name=f"🗣️ Question", value=question, inline=False); embed.add_field(name="🤖 Réponse IA", value=reponse.text.strip(), inline=False)
+        
+        # On coupe la question si elle est trop longue pour éviter de faire planter Discord
+        question_safe = question[:1020] + "..." if len(question) > 1024 else question
+        
+        # On met la réponse dans la 'description' (limite de 4096 caractères au lieu de 1024)
+        texte_ia = reponse.text.strip()
+        if len(texte_ia) > 4000:
+            texte_ia = texte_ia[:4000] + "..." # Sécurité anti-crash
+            
+        embed = discord.Embed(title="🤖 Assistant IA", description=texte_ia, color=0x3498db)
+        embed.add_field(name="🗣️ Ta question", value=question_safe, inline=False)
+        
         await interaction.followup.send(embed=embed)
-    except Exception as e: await interaction.followup.send(f"❌ Erreur: {e}", ephemeral=True)
-
-@bot.tree.command(name="quetes", description="Affiche tes missions quotidiennes pour gagner de l'XP !")
+    except Exception as e: await interaction.followup.send(f"❌ Erreur: {e}", ephemeral=True)@bot.tree.command(name="quetes", description="Affiche tes missions quotidiennes pour gagner de l'XP !")
 async def voir_quetes(interaction: discord.Interaction):
     try:
         conn = get_db_connection()
