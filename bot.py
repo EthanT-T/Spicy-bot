@@ -668,7 +668,7 @@ async def voir_quetes(interaction: discord.Interaction):
             cursor.execute("SELECT steamid, pseudo FROM player_stats WHERE discord_id = %s", (str(interaction.user.id),))
             joueur = cursor.fetchone()
             if not joueur: return await interaction.response.send_message("❌ Compte non lié.", ephemeral=True)
-             steamid, aujourdhui = joueur['steamid'], datetime.now().date()
+            steamid, aujourdhui = joueur['steamid'], datetime.now().date()
             cursor.execute("SELECT * FROM player_quests WHERE steamid = %s AND date_assignation = %s", (steamid, aujourdhui))
             quetes = cursor.fetchall()
             if not quetes:
