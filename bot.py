@@ -374,31 +374,14 @@ async def on_ready():
         if not task.is_running(): task.start()
 
 @bot.event
+@bot.event
 async def on_message(message):
+    # On ignore les messages des bots
     if message.author.bot: return
 
-    salon_ia_staff = get_config('ID_SALON_IA_STAFF')
-    if salon_ia_staff and message.channel.id == salon_ia_staff and model_parler:
-        role_spicy_id = get_config('ID_ROLE_SPICY_TEAM')
-        if role_spicy_id and discord.utils.get(message.author.roles, id=role_spicy_id):
-            async with message.channel.typing():
-                try:
-                    resp = await asyncio.to_thread(model_parler.generate_content, f"Le staff te demande : '{message.content}'. Guide-le avec tes instructions.")
-                    await message.reply(resp.text.strip())
-                except: pass
-            return 
-
-    cat_support_id = get_config('ID_CATEGORIE_SUPPORT')
-    if cat_support_id and message.channel.category_id == cat_support_id and "ticket-" in message.channel.name and model_ia:
-        async with message.channel.typing():
-            try:
-                resp = await asyncio.to_thread(model_ia.generate_content, f"Tu es l'IA de Spicy Anomaly. Réponds concisément (3 phrases). Aide ce joueur, s'il a un bug de compte dis /delier, s'il veut faire appel dis d'aller sur le web. Message : {message.content}")
-                embed = discord.Embed(title="🤖 Assistant Spicy Anomaly", description=resp.text.strip(), color=0x3498db)
-                await message.channel.send(content=f"{message.author.mention}, cette réponse t'a-t-elle aidé ?", embed=embed, view=FAQCloseView())
-            except: pass
-
+    # On a retiré l'IA automatique : le bot ne coupera plus aucune discussion.
+    # Il se contente juste de laisser passer les commandes.
     await bot.process_commands(message)
-
 @bot.event
 async def on_member_join(member):
     if member.bot: return
