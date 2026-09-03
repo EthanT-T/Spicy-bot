@@ -187,6 +187,9 @@ async def process_ticket_closure(channel, closed_by, reason):
     await channel.delete()
 
 
+# ==========================================
+# MENUS, VUES ET FORMULAIRES (UI)
+# ==========================================
 class ModalCloseTicket(discord.ui.Modal, title="Fermeture du ticket"):
     raison = discord.ui.TextInput(label="Raison de la fermeture", style=discord.TextStyle.paragraph, required=True)
     async def on_submit(self, interaction: discord.Interaction):
@@ -243,10 +246,6 @@ class RecrutementPersistentView(discord.ui.View):
     @discord.ui.button(label="Devenir Animateur", style=discord.ButtonStyle.success, custom_id="ticket_anim", emoji="🎉")
     async def btn_anim(self, interaction: discord.Interaction, button: discord.ui.Button): await interaction.response.send_modal(ModalRecrutement("Animateur", "anim"))
 
-
-# ==========================================
-# NOUVEAU SYSTEME DE TICKETS AVEC MENU DEROULANT
-# ==========================================
 class ModalSupport(discord.ui.Modal):
     def __init__(self, raison_choisie: str):
         super().__init__(title=f"Ticket : {raison_choisie}")
@@ -291,17 +290,17 @@ class ModalSupport(discord.ui.Modal):
                         embed_ia = discord.Embed(title="🤖 1ère Réponse Automatique (IA)", description=resp.text.strip(), color=0x3498db)
                         await ticket.send(embed=embed_ia, view=FAQCloseView())
                     except Exception:
-                        pass # Si le quota est dépassé, on ne dit rien et on laisse le staff faire
+                        pass
         except Exception:
             await interaction.followup.send("❌ Erreur lors de la création du ticket.", ephemeral=True)
 
 class TicketReasonSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Problème de Liaison", emoji="🔗", description="Bug avec le bot ou le SteamID"),
-            discord.SelectOption(label="Appel de Sanction", emoji="⚖️", description="Contester un avertissement/mute/ban"),
-            discord.SelectOption(label="Bug en jeu", emoji="🐛", description="Un problème technique sur SCP:SL"),
-            discord.SelectOption(label="Question / Aide", emoji="❓", description="Une question sur le serveur"),
+            discord.SelectOption(label="Problème de Liaison", emoji="🔗", description="Bug avec le bot ou ton compte Steam"),
+            discord.SelectOption(label="Appel de Sanction", emoji="⚖️", description="Contester un avertissement, mute ou ban"),
+            discord.SelectOption(label="Bug en jeu", emoji="🐛", description="Un problème technique sur le serveur SCP:SL"),
+            discord.SelectOption(label="Question / Aide", emoji="❓", description="Une question sur le fonctionnement du serveur"),
             discord.SelectOption(label="Autre", emoji="📝", description="Toute autre demande")
         ]
         super().__init__(placeholder="Sélectionne la raison de ton ticket...", min_values=1, max_values=1, custom_id="select_ticket_reason", options=options)
@@ -313,31 +312,6 @@ class GeneralTicketView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(TicketReasonSelect())
-
-@bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
-@app_commands.default_permissions(manage_guild=True)
-async def ticket_setup(interaction: discord.Interaction, salon: discord.TextChannel):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        embed = discord.Embed(title="Besoin d'aide ?", description="Sélectionne la raison de ta demande via le menu ci-dessous.", color=0x3498db)
-        await salon.send(embed=embed, view=GeneralTicketView())
-        await interaction.followup.send(f"✅ Panel généré avec succès dans {salon.mention} !", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
-@bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
-@app_commands.default_permissions(manage_guild=True)
-async def ticket_setup(interaction: discord.Interaction, salon: discord.TextChannel):
-    await interaction.response.send_message(f"✅ Création du panel en cours dans {salon.mention}...", ephemeral=True)
-    try:
-        await salon.send(embed=discord.Embed(title="Besoin d'aide ?", description="Sélectionne la raison de ta demande via le menu ci-dessous pour ouvrir un ticket.", color=0x3498db), view=GeneralTicketView())
-    except Exception as e:
-        await interaction.followup.send(f"❌ Erreur : Le bot n'a pas la permission d'écrire dans ce salon, ou il y a un bug ({e})", ephemeral=True)
-class GeneralTicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(TicketReasonSelect())
-# ==========================================
-
 
 class TicketStaffView(discord.ui.View):
     def __init__(self):
@@ -427,15 +401,21 @@ class LierCompteView(discord.ui.View):
     @discord.ui.button(label="🔗 Lier mon compte Steam", style=discord.ButtonStyle.success, custom_id="btn_lier_compte")
     async def btn_lier(self, interaction: discord.Interaction, button: discord.ui.Button): await interaction.response.send_modal(LierCompteModal())
 
+# ==========================================
+# LE BOT ET SES EVENEMENTS
+# ==========================================
 class SpicyBot(commands.Bot):
     def __init__(self): super().__init__(command_prefix="!", intents=intents)
     async def setup_hook(self):
         init_db() 
         self.tree.copy_global_to(guild=discord.Object(id=ID_SERVEUR_DISCORD))
         await self.tree.sync(guild=discord.Object(id=ID_SERVEUR_DISCORD))
-        self.add_view(RecrutementPersistentView()); self.add_view(TicketCloseView())
-        self.add_view(FAQCloseView()); self.add_view(LierCompteView())
-        self.add_view(TicketStaffView()); self.add_view(GeneralTicketView()) 
+        self.add_view(RecrutementPersistentView())
+        self.add_view(TicketCloseView())
+        self.add_view(FAQCloseView())
+        self.add_view(LierCompteView())
+        self.add_view(TicketStaffView())
+        self.add_view(GeneralTicketView()) 
 
 bot = SpicyBot()
 
@@ -447,10 +427,7 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    # On ignore les messages des bots
     if message.author.bot: return
-
-    # Le bot laisse passer les commandes sans couper de discussions
     await bot.process_commands(message)
 
 @bot.event
@@ -580,6 +557,9 @@ async def check_levels_and_roles():
     finally:
         if 'conn' in locals() and conn.open: conn.close()
 
+# ==========================================
+# COMMANDES SLASH
+# ==========================================
 @bot.tree.command(name="config_salon", description="[ADMIN] Définir dynamiquement un salon/catégorie")
 @app_commands.default_permissions(manage_guild=True)
 @app_commands.choices(type_salon=[app_commands.Choice(name="Catégorie Support", value="ID_CATEGORIE_SUPPORT"), app_commands.Choice(name="Catégorie Candidatures", value="ID_CATEGORIE_TICKETS"), app_commands.Choice(name="Salon Annonces MVP", value="ID_SALON_ANNONCES"), app_commands.Choice(name="Salon Classement", value="ID_SALON_CLASSEMENT"), app_commands.Choice(name="Salon Alerte Reports IG", value="ID_SALON_TICKETS_STAFF"), app_commands.Choice(name="Salon Statut", value="ID_SALON_STATUT"), app_commands.Choice(name="Salon Logs Transcripts", value="ID_SALON_TRANSCRIPTS"), app_commands.Choice(name="Salon Assistant Staff (IA)", value="ID_SALON_IA_STAFF")])
@@ -689,13 +669,9 @@ async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextCha
     if modifs: embed.add_field(name="🟡 Changements", value="\n".join(modifs), inline=False)
     if retraits: embed.add_field(name="🔴 Retraits", value="\n".join(retraits), inline=False)
     
-    # Gestion parfaite des mentions (sans double arobase)
     mentions = []
-    if ping_everyone:
-        mentions.append("@everyone") # Le vrai ping global propre
-    if role_a_ping:
-        mentions.append(role_a_ping.mention) # Le ping d'un rôle spécifique (ex: @Joueurs)
-        
+    if ping_everyone: mentions.append("@everyone") 
+    if role_a_ping: mentions.append(role_a_ping.mention)
     texte_mention = " ".join(mentions)
 
     await salon.send(content=texte_mention, embed=embed)
@@ -704,16 +680,25 @@ async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextCha
 @bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
 @app_commands.default_permissions(manage_guild=True)
 async def ticket_setup(interaction: discord.Interaction, salon: discord.TextChannel):
-    # Fix du crash "l'application ne répond pas" (limite 3s)
-    await interaction.response.send_message(f"✅ Création du panel en cours dans {salon.mention}...", ephemeral=True)
-    await salon.send(embed=discord.Embed(title="Besoin d'aide ?", description="Sélectionne la raison de ta demande via le menu ci-dessous pour ouvrir un ticket.", color=0x3498db), view=GeneralTicketView())
+    await interaction.response.defer(ephemeral=True)
+    try:
+        embed = discord.Embed(title="Besoin d'aide ?", description="Sélectionne la raison de ta demande via le menu ci-dessous pour ouvrir un ticket.", color=0x3498db)
+        await salon.send(embed=embed, view=GeneralTicketView())
+        await interaction.followup.send(f"✅ Panel généré avec succès dans {salon.mention} !", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send(f"❌ **Erreur Permissions** : Le bot n'a pas le droit d'envoyer des messages ou d'Intégrer des liens dans {salon.mention}.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
 
 @bot.tree.command(name="setup_liaison", description="[STAFF] Créer le bouton de liaison")
 @app_commands.default_permissions(manage_guild=True)
 async def setup_liaison_cmd(interaction: discord.Interaction, salon: discord.TextChannel):
-    # Fix du crash "l'application ne répond pas" (limite 3s)
-    await interaction.response.send_message(f"✅ Création du panneau de liaison en cours dans {salon.mention}...", ephemeral=True)
-    await salon.send(embed=discord.Embed(title="🔗 Liaison de compte", description="Associe ton Discord à ton SteamID.", color=0xe63946), view=LierCompteView())
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await salon.send(embed=discord.Embed(title="🔗 Liaison de compte", description="Associe ton Discord à ton SteamID.", color=0xe63946), view=LierCompteView())
+        await interaction.followup.send(f"✅ Panneau généré dans {salon.mention}.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
 
 @bot.tree.command(name="parler", description="Pose n'importe quelle question sur le serveur à l'IA !")
 async def parler_ia(interaction: discord.Interaction, question: str):
@@ -721,25 +706,17 @@ async def parler_ia(interaction: discord.Interaction, question: str):
     await interaction.response.defer() 
     try:
         reponse = await asyncio.to_thread(model_parler.generate_content, question)
-        
-        # On coupe la question si elle est trop longue pour Discord
         question_safe = question[:1020] + "..." if len(question) > 1024 else question
-        
         texte_ia = reponse.text.strip()
-        if len(texte_ia) > 4000:
-            texte_ia = texte_ia[:4000] + "..."
-            
+        if len(texte_ia) > 4000: texte_ia = texte_ia[:4000] + "..."
         embed = discord.Embed(title="🤖 Assistant IA", description=texte_ia, color=0x3498db)
         embed.add_field(name="🗣️ Ta question", value=question_safe, inline=False)
-        
         await interaction.followup.send(embed=embed)
     except Exception as e: 
         erreur = str(e)
-        # Si c'est une erreur de quota (429), on met un message propre
         if "429" in erreur or "quota" in erreur.lower():
             await interaction.followup.send("⏳ **L'IA est un peu surchargée (limite de requêtes atteinte). Attends une petite minute avant de relancer !**", ephemeral=True)
         else:
-            # Sinon on affiche l'erreur normale
             await interaction.followup.send(f"❌ Erreur technique: {erreur}", ephemeral=True)
 
 @bot.tree.command(name="quetes", description="Affiche tes missions quotidiennes pour gagner de l'XP !")
