@@ -298,19 +298,32 @@ class ModalSupport(discord.ui.Modal):
 class TicketReasonSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Problème de Liaison", emoji="🔗", description="Bug avec le bot ou ton compte Steam"),
-            discord.SelectOption(label="Appel de Sanction", emoji="⚖️", description="Contester un avertissement, mute ou ban"),
-            discord.SelectOption(label="Bug en jeu", emoji="🐛", description="Un problème technique sur le serveur SCP:SL"),
-            discord.SelectOption(label="Question / Aide", emoji="❓", description="Une question sur le fonctionnement du serveur"),
+            discord.SelectOption(label="Problème de Liaison", emoji="🔗", description="Bug avec le bot ou le SteamID"),
+            discord.SelectOption(label="Appel de Sanction", emoji="⚖️", description="Contester un avertissement/mute/ban"),
+            discord.SelectOption(label="Bug en jeu", emoji="🐛", description="Un problème technique sur SCP:SL"),
+            discord.SelectOption(label="Question / Aide", emoji="❓", description="Une question sur le serveur"),
             discord.SelectOption(label="Autre", emoji="📝", description="Toute autre demande")
         ]
-        # C'EST ICI QU'IL MANQUAIT "options=options" !
         super().__init__(placeholder="Sélectionne la raison de ton ticket...", min_values=1, max_values=1, custom_id="select_ticket_reason", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(ModalSupport(raison_choisie=self.values[0]))
 
+class GeneralTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(TicketReasonSelect())
 
+@bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
+@app_commands.default_permissions(manage_guild=True)
+async def ticket_setup(interaction: discord.Interaction, salon: discord.TextChannel):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        embed = discord.Embed(title="Besoin d'aide ?", description="Sélectionne la raison de ta demande via le menu ci-dessous.", color=0x3498db)
+        await salon.send(embed=embed, view=GeneralTicketView())
+        await interaction.followup.send(f"✅ Panel généré avec succès dans {salon.mention} !", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
 @bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
 @app_commands.default_permissions(manage_guild=True)
 async def ticket_setup(interaction: discord.Interaction, salon: discord.TextChannel):
