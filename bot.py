@@ -653,7 +653,7 @@ async def casier_staff(interaction: discord.Interaction, steamid: str):
 
 @bot.tree.command(name="patchnote", description="[STAFF] Publier une mise à jour")
 @app_commands.default_permissions(manage_guild=True)
-async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextChannel, version: str, notes_brutes: str, role_a_ping: discord.Role = None):
+async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextChannel, version: str, notes_brutes: str, ping_everyone: bool = False, role_a_ping: discord.Role = None):
     ajouts, retraits, modifs = [], [], []
     for ligne in notes_brutes.replace(',', '\n').split('\n'):
         ligne = ligne.strip()
@@ -666,8 +666,18 @@ async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextCha
     if ajouts: embed.add_field(name="🟢 Nouveautés", value="\n".join(ajouts), inline=False)
     if modifs: embed.add_field(name="🟡 Changements", value="\n".join(modifs), inline=False)
     if retraits: embed.add_field(name="🔴 Retraits", value="\n".join(retraits), inline=False)
-    await salon.send(content=role_a_ping.mention if role_a_ping else "", embed=embed)
-    await interaction.response.send_message("✅ Publié.", ephemeral=True)
+    
+    # Gestion parfaite des mentions (sans double arobase)
+    mentions = []
+    if ping_everyone:
+        mentions.append("@everyone") # Le vrai ping global propre
+    if role_a_ping:
+        mentions.append(role_a_ping.mention) # Le ping d'un rôle spécifique (ex: @Joueurs)
+        
+    texte_mention = " ".join(mentions)
+
+    await salon.send(content=texte_mention, embed=embed)
+    await interaction.response.send_message("✅ Patch note publié avec succès.", ephemeral=True)
 
 @bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
 @app_commands.default_permissions(manage_guild=True)
