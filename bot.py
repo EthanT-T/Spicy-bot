@@ -422,7 +422,6 @@ async def on_ready():
     for task in [check_levels_and_roles, update_server_status, update_live_leaderboard, check_new_tickets, election_mvp_hebdomadaire]:
         if not task.is_running(): task.start()
 
-
 @bot.event
 async def on_message(message):
     # On ignore les messages des bots
@@ -682,14 +681,16 @@ async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextCha
 @bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
 @app_commands.default_permissions(manage_guild=True)
 async def ticket_setup(interaction: discord.Interaction, salon: discord.TextChannel):
+    # Fix du crash "l'application ne répond pas" (limite 3s)
+    await interaction.response.send_message(f"✅ Création du panel en cours dans {salon.mention}...", ephemeral=True)
     await salon.send(embed=discord.Embed(title="Besoin d'aide ?", description="Sélectionne la raison de ta demande via le menu ci-dessous pour ouvrir un ticket.", color=0x3498db), view=GeneralTicketView())
-    await interaction.response.send_message("✅ Créé.", ephemeral=True)
 
 @bot.tree.command(name="setup_liaison", description="[STAFF] Créer le bouton de liaison")
 @app_commands.default_permissions(manage_guild=True)
 async def setup_liaison_cmd(interaction: discord.Interaction, salon: discord.TextChannel):
+    # Fix du crash "l'application ne répond pas" (limite 3s)
+    await interaction.response.send_message(f"✅ Création du panneau de liaison en cours dans {salon.mention}...", ephemeral=True)
     await salon.send(embed=discord.Embed(title="🔗 Liaison de compte", description="Associe ton Discord à ton SteamID.", color=0xe63946), view=LierCompteView())
-    await interaction.response.send_message("✅ Généré.", ephemeral=True)
 
 @bot.tree.command(name="parler", description="Pose n'importe quelle question sur le serveur à l'IA !")
 async def parler_ia(interaction: discord.Interaction, question: str):
