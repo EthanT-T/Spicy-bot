@@ -304,11 +304,21 @@ class TicketReasonSelect(discord.ui.Select):
             discord.SelectOption(label="Question / Aide", emoji="❓", description="Une question sur le fonctionnement du serveur"),
             discord.SelectOption(label="Autre", emoji="📝", description="Toute autre demande")
         ]
-        super().__init__(placeholder="Sélectionne la raison de ton ticket...", min_values=1, max_values=1, custom_id="select_ticket_reason")
+        # C'EST ICI QU'IL MANQUAIT "options=options" !
+        super().__init__(placeholder="Sélectionne la raison de ton ticket...", min_values=1, max_values=1, custom_id="select_ticket_reason", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(ModalSupport(raison_choisie=self.values[0]))
 
+
+@bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
+@app_commands.default_permissions(manage_guild=True)
+async def ticket_setup(interaction: discord.Interaction, salon: discord.TextChannel):
+    await interaction.response.send_message(f"✅ Création du panel en cours dans {salon.mention}...", ephemeral=True)
+    try:
+        await salon.send(embed=discord.Embed(title="Besoin d'aide ?", description="Sélectionne la raison de ta demande via le menu ci-dessous pour ouvrir un ticket.", color=0x3498db), view=GeneralTicketView())
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erreur : Le bot n'a pas la permission d'écrire dans ce salon, ou il y a un bug ({e})", ephemeral=True)
 class GeneralTicketView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
