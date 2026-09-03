@@ -243,29 +243,78 @@ class RecrutementPersistentView(discord.ui.View):
     @discord.ui.button(label="Devenir Animateur", style=discord.ButtonStyle.success, custom_id="ticket_anim", emoji="🎉")
     async def btn_anim(self, interaction: discord.Interaction, button: discord.ui.Button): await interaction.response.send_modal(ModalRecrutement("Animateur", "anim"))
 
-class ModalSupport(discord.ui.Modal, title="Ouvrir un ticket support"):
-    sujet = discord.ui.TextInput(label="Sujet de ton ticket", style=discord.TextStyle.short, required=True)
+
+# ==========================================
+# NOUVEAU SYSTEME DE TICKETS AVEC MENU DEROULANT
+# ==========================================
+class ModalSupport(discord.ui.Modal):
+    def __init__(self, raison_choisie: str):
+        super().__init__(title=f"Ticket : {raison_choisie}")
+        self.raison_choisie = raison_choisie
+        self.sujet = discord.ui.TextInput(label="Détaille ton problème", style=discord.TextStyle.paragraph, required=True)
+        self.add_item(self.sujet)
+
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         cat_id = get_config('ID_CATEGORIE_SUPPORT')
         categorie = guild.get_channel(cat_id) if cat_id else None
-        nom_salon = f"ticket-{re.sub(r'[^a-z0-9]', '', interaction.user.display_name.lower()) or str(interaction.user.id)[:6]}"
+        
+        pseudo_clean = re.sub(r'[^a-z0-9]', '', interaction.user.display_name.lower()) or str(interaction.user.id)[:6]
+        nom_salon = f"ticket-{pseudo_clean}"
 
-        if discord.utils.get(guild.text_channels, name=nom_salon): return await interaction.followup.send(f"❌ Tu as déjà un ticket support ouvert.", ephemeral=True)
+        if discord.utils.get(guild.text_channels, name=nom_salon):
+            return await interaction.followup.send(f"❌ Tu as déjà un ticket support ouvert.", ephemeral=True)
 
         try:
             ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=get_ticket_overwrites(guild, interaction.user, "support"))
             await interaction.followup.send(f"✅ Ticket créé : {ticket.mention}", ephemeral=True)
-            embed = discord.Embed(title=f"🛠️ Ticket Support", description=f"Bonjour {interaction.user.mention},\n\nNotre IA pourrait te donner la solution immédiatement !\n\n**Sujet :** {self.sujet.value}", color=0xf1c40f)
+            
+            embed = discord.Embed(title=f"🛠️ Ticket : {self.raison_choisie}", description=f"Bonjour {interaction.user.mention},\n\nUn membre du Staff va arriver pour t'aider.\n\n**Ton problème :**\n*{self.sujet.value}*", color=0xf1c40f)
             role_staff_id = get_config('ID_ROLE_SPICY_TEAM')
-            await ticket.send(content=f"{interaction.user.mention} {f'<@&{role_staff_id}>' if role_staff_id else ''}", embed=embed, view=TicketCloseView())
-        except Exception: await interaction.followup.send("❌ Erreur de création.", ephemeral=True)
+            mention_staff = f"<@&{role_staff_id}>" if role_staff_id else ""
+            await ticket.send(content=f"{interaction.user.mention} {mention_staff}", embed=embed, view=TicketCloseView())
+
+            async with ticket.typing():
+                if "Appel de Sanction" in self.raison_choisie:
+                    embed_auto = discord.Embed(title="🤖 Réponse Automatique", description=f"Pour contester une sanction, tu n'es pas au bon endroit !\n\nRends-toi sur notre **[Panel Web]({URL_PANEL_WEB})**, connecte-toi, clique sur ton profil puis sur **'Mes Sanctions'**. Tu pourras y rédiger ton appel officiel.", color=0xe74c3c)
+                    await ticket.send(embed=embed_auto, view=FAQCloseView())
+                    
+                elif "Liaison" in self.raison_choisie:
+                    embed_auto = discord.Embed(title="🤖 Réponse Automatique", description="Si tu as un bug avec la liaison de ton compte Steam :\n1. Tape la commande `/delier` ici sur Discord.\n2. Retourne sur le salon de liaison et recommence avec ton SteamID64.\n\n*Si ça ne marche toujours pas, un staff arrive.*", color=0x3498db)
+                    await ticket.send(embed=embed_auto, view=FAQCloseView())
+                    
+                elif model_ia:
+                    try:
+                        system_prompt = f"Tu es l'IA de Spicy Anomaly. Un joueur ouvre un ticket dans la catégorie '{self.raison_choisie}'. Son message détaillé est : '{self.sujet.value}'. Réponds très concisément (3 phrases max) pour lui donner un conseil lié à son problème avant qu'un modérateur n'arrive."
+                        resp = await asyncio.to_thread(model_ia.generate_content, system_prompt)
+                        embed_ia = discord.Embed(title="🤖 1ère Réponse Automatique (IA)", description=resp.text.strip(), color=0x3498db)
+                        await ticket.send(embed=embed_ia, view=FAQCloseView())
+                    except Exception:
+                        pass # Si le quota est dépassé, on ne dit rien et on laisse le staff faire
+        except Exception:
+            await interaction.followup.send("❌ Erreur lors de la création du ticket.", ephemeral=True)
+
+class TicketReasonSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Problème de Liaison", emoji="🔗", description="Bug avec le bot ou ton compte Steam"),
+            discord.SelectOption(label="Appel de Sanction", emoji="⚖️", description="Contester un avertissement, mute ou ban"),
+            discord.SelectOption(label="Bug en jeu", emoji="🐛", description="Un problème technique sur le serveur SCP:SL"),
+            discord.SelectOption(label="Question / Aide", emoji="❓", description="Une question sur le fonctionnement du serveur"),
+            discord.SelectOption(label="Autre", emoji="📝", description="Toute autre demande")
+        ]
+        super().__init__(placeholder="Sélectionne la raison de ton ticket...", min_values=1, max_values=1, custom_id="select_ticket_reason")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(ModalSupport(raison_choisie=self.values[0]))
 
 class GeneralTicketView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None)
-    @discord.ui.button(label="Ouvrir un ticket", style=discord.ButtonStyle.primary, custom_id="btn_open_general_ticket", emoji="📩")
-    async def btn_open(self, interaction: discord.Interaction, button: discord.ui.Button): await interaction.response.send_modal(ModalSupport())
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(TicketReasonSelect())
+# ==========================================
+
 
 class TicketStaffView(discord.ui.View):
     def __init__(self):
@@ -373,15 +422,15 @@ async def on_ready():
     for task in [check_levels_and_roles, update_server_status, update_live_leaderboard, check_new_tickets, election_mvp_hebdomadaire]:
         if not task.is_running(): task.start()
 
-@bot.event
+
 @bot.event
 async def on_message(message):
     # On ignore les messages des bots
     if message.author.bot: return
 
-    # On a retiré l'IA automatique : le bot ne coupera plus aucune discussion.
-    # Il se contente juste de laisser passer les commandes.
+    # Le bot laisse passer les commandes sans couper de discussions
     await bot.process_commands(message)
+
 @bot.event
 async def on_member_join(member):
     if member.bot: return
@@ -623,7 +672,7 @@ async def patchnote_cmd(interaction: discord.Interaction, salon: discord.TextCha
 @bot.tree.command(name="ticket_setup", description="[STAFF] Créer un panel de tickets support")
 @app_commands.default_permissions(manage_guild=True)
 async def ticket_setup(interaction: discord.Interaction, salon: discord.TextChannel):
-    await salon.send(embed=discord.Embed(title="Besoin d'aide ?", description="Ouvrir un ticket support.", color=0x3498db), view=GeneralTicketView())
+    await salon.send(embed=discord.Embed(title="Besoin d'aide ?", description="Sélectionne la raison de ta demande via le menu ci-dessous pour ouvrir un ticket.", color=0x3498db), view=GeneralTicketView())
     await interaction.response.send_message("✅ Créé.", ephemeral=True)
 
 @bot.tree.command(name="setup_liaison", description="[STAFF] Créer le bouton de liaison")
@@ -658,6 +707,8 @@ async def parler_ia(interaction: discord.Interaction, question: str):
         else:
             # Sinon on affiche l'erreur normale
             await interaction.followup.send(f"❌ Erreur technique: {erreur}", ephemeral=True)
+
+@bot.tree.command(name="quetes", description="Affiche tes missions quotidiennes pour gagner de l'XP !")
 async def voir_quetes(interaction: discord.Interaction):
     try:
         conn = get_db_connection()
