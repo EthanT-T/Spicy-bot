@@ -5,7 +5,8 @@ import pymysql
 import os
 from flask import Flask
 from threading import Thread
-from datetime import datetime, time
+# IMPORT MIS À JOUR POUR GÉRER L'HEURE DES ÉVÉNEMENTS
+from datetime import datetime, time, timedelta, timezone 
 import aiohttp
 import re
 import asyncio
@@ -289,10 +290,12 @@ class ModalSupport(discord.ui.Modal):
                         resp = await asyncio.to_thread(model_ia.generate_content, system_prompt)
                         embed_ia = discord.Embed(title="🤖 1ère Réponse Automatique (IA)", description=resp.text.strip(), color=0x3498db)
                         await ticket.send(embed=embed_ia, view=FAQCloseView())
-                    except Exception:
-                        pass
-        except Exception:
-            await interaction.followup.send("❌ Erreur lors de la création du ticket.", ephemeral=True)
+                    except Exception as ia_e:
+                        print(f"Erreur IA générée : {ia_e}")
+                        pass 
+        except Exception as e:
+            await interaction.followup.send(f"❌ Erreur lors de la création : `{e}`", ephemeral=True)
+            print(f"ERREUR TICKET FATALE : {e}")
 
 class TicketReasonSelect(discord.ui.Select):
     def __init__(self):
@@ -422,7 +425,8 @@ bot = SpicyBot()
 @bot.event
 async def on_ready():
     print(f'✅ Bot connecté en tant que {bot.user} !')
-    for task in [check_levels_and_roles, update_server_status, update_live_leaderboard, check_new_tickets, election_mvp_hebdomadaire]:
+    # On allume le check d'événements avec les autres
+    for task in [check_levels_and_roles, update_server_status, update_live_leaderboard, check_new_tickets, election_mvp_hebdomadaire, check_new_events]:
         if not task.is_running(): task.start()
 
 @bot.event
@@ -556,6 +560,62 @@ async def check_levels_and_roles():
     except: pass
     finally:
         if 'conn' in locals() and conn.open: conn.close()
+
+# ⚠️ NOUVELLE FONCTION AUTOMATIQUE DES ÉVÉNEMENTS DU PANEL
+@tasks.loop(minutes=2)
+async def check_new_events():
+    # ⚠️ Modifie 'server_evenements' par le vrai nom de la table SQL de ton Panel Web !
+    NOM_DE_LA_TABLE = "server_evenements" 
+    
+    salon_id = get_config('ID_SALON_ANNONCES')
+    if not salon_id or not (guild := bot.get_guild(ID_SERVEUR_DISCORD)) or not (channel := guild.get_channel(salon_id)): return
+    
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            # 1. On tente de créer la colonne de sécurité toute seule si elle n'existe pas
+            try:
+                cursor.execute(f"ALTER TABLE {NOM_DE_LA_TABLE} ADD COLUMN annonce_postee TINYINT(1) DEFAULT 0")
+                conn.commit()
+            except: pass # Si elle existe déjà, on ignore
+
+            # 2. On récupère les événements qui n'ont pas encore été annoncés
+            cursor.execute(f"SELECT id, titre, description, date_heure FROM {NOM_DE_LA_TABLE} WHERE annonce_postee = 0")
+            evenements = cursor.fetchall()
+            
+            for ev in evenements:
+                # Sécurisation de l'heure
+                date_event = ev['date_heure']
+                if date_event.tzinfo is None:
+                    date_event = date_event.replace(tzinfo=timezone.utc)
+                if date_event < discord.utils.utcnow():
+                    date_event = discord.utils.utcnow() + timedelta(minutes=5)
+                
+                # 3. Création de l'Événement natif tout en haut du serveur Discord
+                discord_event = await guild.create_scheduled_event(
+                    name=ev['titre'],
+                    description=ev['description'],
+                    start_time=date_event,
+                    end_time=date_event + timedelta(hours=2),
+                    entity_type=discord.EntityType.external,
+                    privacy_level=discord.PrivacyLevel.guild_only,
+                    location="Serveur SCP:SL"
+                )
+                
+                # 4. Envoi de l'embed avec le ping global
+                embed = discord.Embed(title=f"🎉 {ev['titre']}", description=ev['description'], color=0x9b59b6, timestamp=date_event)
+                embed.add_field(name="🔗 Rejoindre l'événement", value=discord_event.url, inline=False)
+                await channel.send(content="@everyone 📢 **Un nouvel événement a été programmé par le Staff !**", embed=embed)
+                
+                # 5. On coche la case pour ne plus jamais le renvoyer
+                cursor.execute(f"UPDATE {NOM_DE_LA_TABLE} SET annonce_postee = 1 WHERE id = %s", (ev['id'],))
+            
+            conn.commit()
+    except Exception as e:
+        print(f"Erreur check_new_events (Vérifie le nom de ta table SQL) : {e}")
+    finally:
+        if 'conn' in locals() and conn.open: conn.close()
+
 
 # ==========================================
 # COMMANDES SLASH
