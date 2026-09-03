@@ -565,7 +565,7 @@ async def check_levels_and_roles():
 @tasks.loop(minutes=2)
 async def check_new_events():
     # ⚠️ Modifie 'server_evenements' par le vrai nom de la table SQL de ton Panel Web !
-    NOM_DE_LA_TABLE = "server_evenements" 
+    NOM_DE_LA_TABLE = "server_events" 
     
     salon_id = get_config('ID_SALON_ANNONCES')
     if not salon_id or not (guild := bot.get_guild(ID_SERVEUR_DISCORD)) or not (channel := guild.get_channel(salon_id)): return
@@ -580,7 +580,7 @@ async def check_new_events():
             except: pass # Si elle existe déjà, on ignore
 
             # 2. On récupère les événements qui n'ont pas encore été annoncés
-            cursor.execute(f"SELECT id, titre, description, date_heure FROM {NOM_DE_LA_TABLE} WHERE annonce_postee = 0")
+            cursor.execute(f"SELECT id, titre, description, date_event FROM {NOM_DE_LA_TABLE} WHERE discord_sent = 0")
             evenements = cursor.fetchall()
             
             for ev in evenements:
