@@ -561,10 +561,9 @@ async def check_levels_and_roles():
     finally:
         if 'conn' in locals() and conn.open: conn.close()
 
-# ⚠️ NOUVELLE FONCTION AUTOMATIQUE DES ÉVÉNEMENTS DU PANEL
+# ⚠️ LA FONCTION AUTOMATIQUE PARFAITEMENT CORRIGÉE
 @tasks.loop(minutes=2)
 async def check_new_events():
-    # ⚠️ Modifie 'server_evenements' par le vrai nom de la table SQL de ton Panel Web !
     NOM_DE_LA_TABLE = "server_events" 
     
     salon_id = get_config('ID_SALON_ANNONCES')
@@ -573,46 +572,46 @@ async def check_new_events():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            # 1. On tente de créer la colonne de sécurité toute seule si elle n'existe pas
+            # 1. On tente de créer la colonne de sécurité toute seule
             try:
                 cursor.execute(f"ALTER TABLE {NOM_DE_LA_TABLE} ADD COLUMN annonce_postee TINYINT(1) DEFAULT 0")
                 conn.commit()
             except: pass # Si elle existe déjà, on ignore
 
-            # 2. On récupère les événements qui n'ont pas encore été annoncés
-            cursor.execute(f"SELECT id, titre, description, date_event FROM {NOM_DE_LA_TABLE} WHERE discord_sent = 0")
+            # 2. On récupère les événements (On cherche bien 'annonce_postee = 0' !)
+            cursor.execute(f"SELECT id, titre, description, date_event FROM {NOM_DE_LA_TABLE} WHERE annonce_postee = 0")
             evenements = cursor.fetchall()
             
             for ev in evenements:
-                # Sécurisation de l'heure
-                date_event = ev['date_heure']
-                if date_event.tzinfo is None:
-                    date_event = date_event.replace(tzinfo=timezone.utc)
-                if date_event < discord.utils.utcnow():
-                    date_event = discord.utils.utcnow() + timedelta(minutes=5)
+                # 3. Sécurisation de l'heure (J'ai corrigé ev['date_heure'] qui faisait crasher !)
+                date_ev = ev['date_event']
+                if date_ev.tzinfo is None:
+                    date_ev = date_ev.replace(tzinfo=timezone.utc)
+                if date_ev < discord.utils.utcnow():
+                    date_ev = discord.utils.utcnow() + timedelta(minutes=5)
                 
-                # 3. Création de l'Événement natif tout en haut du serveur Discord
+                # 4. Création de l'Événement natif tout en haut du serveur Discord
                 discord_event = await guild.create_scheduled_event(
                     name=ev['titre'],
                     description=ev['description'],
-                    start_time=date_event,
-                    end_time=date_event + timedelta(hours=2),
+                    start_time=date_ev,
+                    end_time=date_ev + timedelta(hours=2),
                     entity_type=discord.EntityType.external,
                     privacy_level=discord.PrivacyLevel.guild_only,
                     location="Serveur SCP:SL"
                 )
                 
-                # 4. Envoi de l'embed avec le ping global
-                embed = discord.Embed(title=f"🎉 {ev['titre']}", description=ev['description'], color=0x9b59b6, timestamp=date_event)
+                # 5. Envoi de l'embed avec le ping global
+                embed = discord.Embed(title=f"🎉 {ev['titre']}", description=ev['description'], color=0x9b59b6, timestamp=date_ev)
                 embed.add_field(name="🔗 Rejoindre l'événement", value=discord_event.url, inline=False)
                 await channel.send(content="@everyone 📢 **Un nouvel événement a été programmé par le Staff !**", embed=embed)
                 
-                # 5. On coche la case pour ne plus jamais le renvoyer
+                # 6. On coche la case pour ne plus jamais le renvoyer
                 cursor.execute(f"UPDATE {NOM_DE_LA_TABLE} SET annonce_postee = 1 WHERE id = %s", (ev['id'],))
             
             conn.commit()
     except Exception as e:
-        print(f"Erreur check_new_events (Vérifie le nom de ta table SQL) : {e}")
+        print(f"Erreur check_new_events : {e}")
     finally:
         if 'conn' in locals() and conn.open: conn.close()
 
